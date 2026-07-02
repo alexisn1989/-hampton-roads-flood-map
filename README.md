@@ -28,14 +28,31 @@ geocoder doesn't send CORS headers); zone and SLR values are queried live
 from FEMA NFHL and NOAA at the clicked point. Screening info only — not a
 flood insurance determination.
 
+## AI property report
+
+Each lookup popup has a **Generate AI report** button: the collected data
+(zone, SLR result, elevation vs BFE, claims history, districts, nearest
+gauge) is sent to `POST /api/report`, where Claude writes a plain-English
+homeowner report. The prompt is strictly grounded — Claude may only use the
+queried values, must say when a field is unavailable, and never invents
+numbers. Reports are cached in memory by payload hash. Model defaults to
+`claude-haiku-4-5` (fractions of a cent per report); override with the
+`FLOOD_MODEL` env var.
+
 ## Run it
 
 ```
 python prepare_data.py      # one-time: builds data/*.geojson + stations.json
-python -m http.server 8000
+python server.py            # serves the map + AI report API on :8000
 ```
 
 Then open http://localhost:8000
+
+The server needs `ANTHROPIC_API_KEY` (from the environment, a `.env` here,
+or the sibling VoteIQ repo's `.env` as a fallback). Without a key the map
+still works fully — only the AI report button degrades with an explanatory
+message. `python -m http.server` also still works for a no-backend static
+preview.
 
 `prepare_data.py` needs `geopandas` (with `shapely`/`pyproj`) and network
 access to Census TIGERweb and the NOAA metadata API. The generated files in
