@@ -118,7 +118,8 @@ app.mount("/", StaticFiles(directory=str(BASE), html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    port = 8000
+    # Render (and most PaaS hosts) inject PORT and expect a bind on 0.0.0.0.
+    port = int(os.environ.get("PORT", 8000))
     if "--port" in sys.argv:
         port = int(sys.argv[sys.argv.index("--port") + 1])
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
