@@ -288,24 +288,73 @@ function findDistrict(layerLabel, lon, lat) {
 async function queryFemaZone(lon, lat) {
   const url = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query" +
     `?geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326` +
-    "&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY" +
+    "&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY,STATIC_BFE" +
     "&returnGeometry=false&f=json";
   const data = await (await fetch(url)).json();
   if (!data.features || !data.features.length) return { text: "Not in a mapped FEMA flood zone here", color: "#31a354" };
-  const { FLD_ZONE: zone, ZONE_SUBTY: subty } = data.features[0].attributes;
-  if (subty && subty.includes("OPEN WATER")) return { text: "Open water", color: "#555" };
-  if (zone && zone.startsWith("V")) {
-    return { text: `Zone ${zone} — high risk: 1% annual chance flood with coastal wave hazard`, color: "#d7301f" };
+  const { FLD_ZONE: zone, ZONE_SUBTY: subty, STATIC_BFE: rawBfe } = data.features[0].attributes;
+  // NFHL uses -9999 as the null sentinel for BFE
+  const bfe = rawBfe !== null && rawBfe > -1000 ? rawBfe : null;
+  const classify = () => {
+    if (subty && subty.includes("OPEN WATER")) return { text: "Open water", color: "#555" };
+    if (zone && zone.startsWith("V")) {
+      return { text: `Zone ${zone} — high risk: 1% annual chance flood with coastal wave hazard`, color: "#d7301f" };
+    }
+    if (zone && zone.startsWith("A")) {
+      return { text: `Zone ${zone} — high risk: 1% annual chance (100-year) floodplain`, color: "#d7301f" };
+    }
+    if (zone === "X" && subty && subty.includes("0.2 PCT")) {
+      return { text: "Zone X (shaded) — moderate risk: 0.2% annual chance (500-year)", color: "#fc8d59" };
+    }
+    if (zone === "X") return { text: "Zone X — minimal flood hazard", color: "#31a354" };
+    if (zone === "D") return { text: "Zone D — flood risk not determined", color: "#999" };
+    return { text: `Zone ${zone}${subty ? " (" + subty.toLowerCase() + ")" : ""}`, color: "#999" };
+  };
+  return { ...classify(), zone, bfe };
+}
+
+async function queryElevation(lon, lat) {
+  const url = "https://epqs.nationalmap.gov/v1/json" +
+    `?x=${lon}&y=${lat}&units=Feet&wkid=4326&includeDate=false`;
+  const data = await (await fetch(url)).json();
+  const value = parseFloat(data.value);
+  // EPQS returns a large negative sentinel where lidar has no data
+  if (!isFinite(value) || value < -400) throw new Error("no elevation data");
+  return value;
+}
+
+// NFIP claims for the census tract containing the point. Claims are coded to
+// 2010 tracts (older records) or 2020 tracts, so resolve both vintages and
+// query with an OR filter.
+async function queryClaims(lon, lat) {
+  const fccUrl = (year) => "https://geo.fcc.gov/api/census/block/find" +
+    `?latitude=${lat}&longitude=${lon}&censusYear=${year}&format=json`;
+  const blocks = await Promise.all([2010, 2020].map((y) =>
+    fetch(fccUrl(y)).then((r) => r.json())));
+  const tracts = [...new Set(blocks
+    .map((b) => b.Block && b.Block.FIPS ? b.Block.FIPS.slice(0, 11) : null)
+    .filter(Boolean))];
+  if (!tracts.length) throw new Error("no census tract at point");
+  const filter = tracts.map((t) => `censusTract eq '${t}'`).join(" or ");
+  const url = "https://www.fema.gov/api/open/v2/FimaNfipClaims" +
+    `?$filter=${encodeURIComponent(filter)}` +
+    "&$select=yearOfLoss,amountPaidOnBuildingClaim,amountPaidOnContentsClaim" +
+    "&$top=10000&$format=json";
+  const data = await (await fetch(url)).json();
+  const claims = data.FimaNfipClaims || [];
+  let totalPaid = 0;
+  let lastYear = null;
+  for (const c of claims) {
+    totalPaid += (c.amountPaidOnBuildingClaim || 0) + (c.amountPaidOnContentsClaim || 0);
+    if (c.yearOfLoss && (!lastYear || c.yearOfLoss > lastYear)) lastYear = c.yearOfLoss;
   }
-  if (zone && zone.startsWith("A")) {
-    return { text: `Zone ${zone} — high risk: 1% annual chance (100-year) floodplain`, color: "#d7301f" };
-  }
-  if (zone === "X" && subty && subty.includes("0.2 PCT")) {
-    return { text: "Zone X (shaded) — moderate risk: 0.2% annual chance (500-year)", color: "#fc8d59" };
-  }
-  if (zone === "X") return { text: "Zone X — minimal flood hazard", color: "#31a354" };
-  if (zone === "D") return { text: "Zone D — flood risk not determined", color: "#999" };
-  return { text: `Zone ${zone}${subty ? " (" + subty.toLowerCase() + ")" : ""}`, color: "#999" };
+  return { count: claims.length, totalPaid, lastYear };
+}
+
+function formatMoney(n) {
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `$${Math.round(n / 1e3)}k`;
+  return `$${Math.round(n)}`;
 }
 
 async function querySlr(lon, lat) {
@@ -366,10 +415,35 @@ async function riskLookup(lat, lon, label) {
   }
   lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
 
-  const [femaRes, slrRes] = await Promise.allSettled([queryFemaZone(lon, lat), querySlr(lon, lat)]);
+  const [femaRes, slrRes, elevRes, claimsRes] = await Promise.allSettled([
+    queryFemaZone(lon, lat), querySlr(lon, lat),
+    queryElevation(lon, lat), queryClaims(lon, lat),
+  ]);
   const unavailable = { text: "unavailable right now", color: "#999" };
   const femaZone = femaRes.status === "fulfilled" ? femaRes.value : unavailable;
   const slr = slrRes.status === "fulfilled" ? slrRes.value : unavailable;
+  const elevation = elevRes.status === "fulfilled" ? elevRes.value : null;
+  const claims = claimsRes.status === "fulfilled" ? claimsRes.value : null;
+
+  let elevLine = "";
+  if (elevation !== null) {
+    elevLine = `<b>Ground elevation:</b> ${elevation.toFixed(1)} ft (NAVD88)`;
+    if (femaZone.bfe != null) {
+      const delta = elevation - femaZone.bfe;
+      const rel = delta >= 0 ? "above" : "below";
+      elevLine += ` &middot; base flood elevation ${femaZone.bfe} ft ` +
+        `(ground ${Math.abs(delta).toFixed(1)} ft ${rel} BFE)`;
+    }
+    elevLine += "<br>";
+  }
+
+  let claimsLine = "";
+  if (claims !== null) {
+    claimsLine = claims.count === 0
+      ? "<b>NFIP claims:</b> none recorded in this census tract<br>"
+      : `<b>NFIP claims:</b> ${claims.count.toLocaleString()} in this census tract ` +
+        `(${formatMoney(claims.totalPaid)} paid, most recent ${claims.lastYear})<br>`;
+  }
 
   const cd = findDistrict("Congressional districts (2021)", lon, lat);
   const senate = findDistrict("State Senate districts (2024)", lon, lat);
@@ -391,6 +465,7 @@ async function riskLookup(lat, lon, label) {
        ${femaZone.text}<br>
        <b>Sea level rise:</b> <span class="zone-badge" style="background:${slr.color}">&nbsp;</span>
        ${slr.text}<br>
+       ${elevLine}${claimsLine}
        <b>Represented by:</b>
        ${reps.length ? `<ul>${reps.map((r) => `<li>${r}</li>`).join("")}</ul>` : " outside loaded district data<br>"}
        ${gauge ? `<b>Nearest tide gauge:</b> ${gauge.st.name} (${gauge.miles.toFixed(1)} mi)<br>` : ""}
