@@ -12,15 +12,25 @@ import hashlib
 import json
 import os
 import sys
+import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 import anthropic
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE = Path(__file__).parent
 MODEL = os.environ.get("FLOOD_MODEL", "claude-haiku-4-5")
+
+# Per-IP throttle: guards the endpoint itself (cache hits included) against
+# scripted hammering. Daily cap: guards actual spend, so it only counts real
+# Claude calls (cache hits are free and don't count against it).
+IP_LIMIT = int(os.environ.get("REPORT_IP_LIMIT", "6"))
+IP_WINDOW_SECONDS = int(os.environ.get("REPORT_IP_WINDOW_SECONDS", "600"))
+DAILY_LIMIT = int(os.environ.get("REPORT_DAILY_LIMIT", "200"))
 
 SYSTEM_PROMPT = """\
 You write plain-English flood risk reports for properties in Hampton Roads, Virginia.
@@ -67,13 +77,59 @@ app = FastAPI(title="Hampton Roads Flood Map")
 _report_cache: dict[str, str] = {}
 _CACHE_MAX = 500
 
+_ip_lock = threading.Lock()
+_ip_hits: dict[str, deque] = defaultdict(deque)
+
+_daily_lock = threading.Lock()
+_daily_count = 0
+_daily_day: str | None = None
+
+
+def _client_ip(request: Request) -> str:
+    # Render sits behind a proxy — the real client IP is the first hop in
+    # X-Forwarded-For, not request.client.host (that would be the proxy).
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_ip_rate_limit(ip: str) -> None:
+    now = time.time()
+    with _ip_lock:
+        hits = _ip_hits[ip]
+        while hits and now - hits[0] > IP_WINDOW_SECONDS:
+            hits.popleft()
+        if len(hits) >= IP_LIMIT:
+            retry_after = max(1, int(IP_WINDOW_SECONDS - (now - hits[0])) + 1)
+            raise HTTPException(
+                429,
+                f"Too many report requests from this address. Try again in {retry_after}s.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        hits.append(now)
+
+
+def _check_daily_cap() -> None:
+    global _daily_count, _daily_day
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    with _daily_lock:
+        if _daily_day != today:
+            _daily_day = today
+            _daily_count = 0
+        if _daily_count >= DAILY_LIMIT:
+            raise HTTPException(429, "Daily report limit reached — please try again tomorrow.")
+        _daily_count += 1
+
 
 class ReportRequest(BaseModel):
     lookup: dict
 
 
 @app.post("/api/report")
-def generate_report(req: ReportRequest) -> dict:
+def generate_report(req: ReportRequest, request: Request) -> dict:
+    _check_ip_rate_limit(_client_ip(request))
+
     _ensure_api_key()
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(503, "ANTHROPIC_API_KEY is not configured on the server")
@@ -83,6 +139,8 @@ def generate_report(req: ReportRequest) -> dict:
     ).hexdigest()
     if cache_key in _report_cache:
         return {"report": _report_cache[cache_key], "cached": True, "model": MODEL}
+
+    _check_daily_cap()
 
     client = anthropic.Anthropic()
     try:
