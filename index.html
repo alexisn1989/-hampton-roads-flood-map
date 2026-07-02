@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hampton Roads Flood Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  html, body { height: 100%; margin: 0; font-family: "Segoe UI", system-ui, sans-serif; }
+  #map { height: 100%; }
+
+  .panel {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 8px;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+    padding: 10px 14px;
+    max-width: 300px;
+  }
+  .panel h1 { font-size: 16px; margin: 0 0 2px; }
+  .panel .subtitle { font-size: 11px; color: #555; margin-bottom: 8px; }
+  .panel label { font-size: 12px; font-weight: 600; display: block; margin-top: 6px; }
+  .panel input[type="range"] { width: 100%; }
+  .slr-value { font-size: 13px; font-weight: 700; color: #0b5394; }
+  .panel .hint { font-size: 11px; color: #666; margin-top: 4px; }
+
+  .legend { line-height: 1.5; font-size: 12px; }
+  .legend .swatch {
+    display: inline-block; width: 14px; height: 14px;
+    margin-right: 6px; vertical-align: -2px; border-radius: 3px;
+  }
+  .legend .line-swatch {
+    display: inline-block; width: 14px; height: 0; margin-right: 6px;
+    vertical-align: 3px; border-top: 3px solid;
+  }
+  .legend .dot {
+    display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    margin-right: 6px; vertical-align: -1px; border: 1.5px solid #333;
+  }
+
+  .station-popup table { border-collapse: collapse; font-size: 12px; }
+  .station-popup td { padding: 1px 8px 1px 0; }
+  .station-popup .obs { font-size: 18px; font-weight: 700; }
+  .status-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    color: #fff; font-size: 11px; font-weight: 700;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+"use strict";
+
+const map = L.map("map", { center: [37.02, -76.35], zoom: 10 });
+
+// ---------------------------------------------------------------- base maps
+const positron = L.tileLayer(
+  "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors &copy; CARTO" }
+).addTo(map);
+const imagery = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 19, attribution: "Esri World Imagery" }
+);
+
+// ------------------------------------------------- NOAA sea level rise tiles
+// Cached tile services behind the NOAA Sea Level Rise Viewer. Each service
+// shows inundation (plus low-lying areas) at N feet above local MHHW.
+const slrLayers = {};
+for (let ft = 1; ft <= 10; ft++) {
+  slrLayers[ft] = L.tileLayer(
+    `https://coast.noaa.gov/arcgis/rest/services/dc_slr/slr_${ft}ft/MapServer/tile/{z}/{y}/{x}`,
+    { maxZoom: 19, opacity: 0.6, attribution: "NOAA Office for Coastal Management" }
+  );
+}
+let activeSlr = null;
+function setSlr(ft) {
+  if (activeSlr) { map.removeLayer(slrLayers[activeSlr]); activeSlr = null; }
+  if (ft >= 1) { slrLayers[ft].addTo(map); activeSlr = ft; }
+  document.getElementById("slr-value").textContent = ft === 0 ? "off" : `${ft} ft`;
+}
+
+// ------------------------------------------------------- FEMA flood zones
+// FEMA's WMS endpoint rejects requests, so tile the REST export API instead.
+const FemaLayer = L.TileLayer.extend({
+  getTileUrl(coords) {
+    const origin = 20037508.342789244; // Web Mercator world half-width
+    const span = (2 * origin) / Math.pow(2, coords.z);
+    const xmin = -origin + coords.x * span;
+    const ymax = origin - coords.y * span;
+    return "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/export" +
+      `?bbox=${xmin},${ymax - span},${xmin + span},${ymax}` +
+      "&bboxSR=3857&imageSR=3857&size=256,256&layers=show:28" +
+      "&transparent=true&format=png32&f=image";
+  },
+});
+const fema = new FemaLayer("", {
+  opacity: 0.55, minZoom: 13, maxZoom: 19,
+  attribution: "FEMA National Flood Hazard Layer",
+});
+
+// ------------------------------------------------------- district overlays
+const overlays = {};
+
+function districtLayer(url, style, popupFn, layerLabel) {
+  const layer = L.geoJSON(null, {
+    style,
+    onEachFeature: (feature, lyr) => {
+      lyr.bindPopup(popupFn(feature.properties));
+      lyr.on("mouseover", () => lyr.setStyle({ weight: style.weight + 2 }));
+      lyr.on("mouseout", () => lyr.setStyle({ weight: style.weight }));
+    },
+  });
+  fetch(url)
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((geojson) => layer.addData(geojson))
+    .catch((err) => console.error(`failed to load ${url}:`, err));
+  overlays[layerLabel] = layer;
+  return layer;
+}
+
+districtLayer(
+  "data/congressional_districts.geojson",
+  { color: "#6a3d9a", weight: 2.5, fillOpacity: 0.03, dashArray: null },
+  (p) => `<b>Congressional District ${p.DISTRICT}</b><br>2021 SCV Final plan`,
+  "Congressional districts (2021)"
+);
+districtLayer(
+  "data/senate_districts.geojson",
+  { color: "#e31a1c", weight: 1.8, fillOpacity: 0.03 },
+  (p) => `<b>${p.NAME}</b><br>Virginia Senate &middot; GEOID ${p.GEOID}`,
+  "State Senate districts (2024)"
+);
+districtLayer(
+  "data/house_districts.geojson",
+  { color: "#1f78b4", weight: 1.5, fillOpacity: 0.03 },
+  (p) => `<b>${p.NAME}</b><br>House of Delegates &middot; GEOID ${p.GEOID}`,
+  "House of Delegates districts (2024)"
+);
+const localities = districtLayer(
+  "data/localities.geojson",
+  { color: "#555", weight: 1.2, fillOpacity: 0, dashArray: "4 4" },
+  (p) => `<b>${p.NAME}</b>`,
+  "City / county boundaries"
+);
+localities.addTo(map);
+
+// --------------------------------------------------------- NOAA tide gauges
+const STATUS_COLORS = {
+  major: "#7a0177", moderate: "#d7301f", minor: "#fc8d59",
+  action: "#fee08b", normal: "#31a354", unknown: "#999",
+};
+const STATUS_LABELS = {
+  major: "MAJOR FLOODING", moderate: "MODERATE FLOODING", minor: "MINOR FLOODING",
+  action: "NEAR FLOOD (action)", normal: "Normal", unknown: "No live data",
+};
+
+const gaugeLayer = L.layerGroup();
+overlays["Tide gauges (live)"] = gaugeLayer;
+gaugeLayer.addTo(map);
+const gaugeMarkers = {}; // station id -> circleMarker
+
+function classify(obs, thresholds) {
+  if (obs === null || !thresholds) return "unknown";
+  for (const level of ["major", "moderate", "minor", "action"]) {
+    if (thresholds[level] !== undefined && obs >= thresholds[level]) return level;
+  }
+  return "normal";
+}
+
+function stationPopup(st, obs, obsTime, status) {
+  const badge = `<span class="status-badge" style="background:${STATUS_COLORS[status]};` +
+    `${status === "action" ? "color:#333;" : ""}">${STATUS_LABELS[status]}</span>`;
+  let rows = "";
+  if (st.thresholds_mllw) {
+    for (const level of ["action", "minor", "moderate", "major"]) {
+      const v = st.thresholds_mllw[level];
+      if (v !== undefined) {
+        rows += `<tr><td>${level[0].toUpperCase() + level.slice(1)} threshold</td>` +
+                `<td>${v.toFixed(2)} ft</td></tr>`;
+      }
+    }
+  }
+  const obsHtml = obs === null
+    ? "<i>live data unavailable</i>"
+    : `<span class="obs">${obs.toFixed(2)} ft</span> MLLW<br><small>${obsTime}</small>`;
+  return `<div class="station-popup"><b>${st.name}</b> &middot; NOAA ${st.id}<br>` +
+         `${badge}<br><br>${obsHtml}<br><br>` +
+         (rows ? `<table>${rows}</table>` : "<i>no NWS flood thresholds published</i>") +
+         `<br><small>Heights in feet above MLLW &middot; refreshes every 6 min</small></div>`;
+}
+
+async function refreshStation(st) {
+  let obs = null;
+  let obsTime = "";
+  try {
+    const url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter" +
+      `?date=latest&station=${st.id}&product=water_level&datum=MLLW` +
+      "&units=english&time_zone=lst_ldt&format=json";
+    const data = await (await fetch(url)).json();
+    if (data.data && data.data.length) {
+      obs = parseFloat(data.data[0].v);
+      obsTime = data.data[0].t + " local";
+    }
+  } catch (err) {
+    console.error(`station ${st.id}:`, err);
+  }
+  const status = classify(obs, st.thresholds_mllw);
+  const marker = gaugeMarkers[st.id];
+  marker.setStyle({ fillColor: STATUS_COLORS[status] });
+  marker.setPopupContent(stationPopup(st, obs, obsTime, status));
+}
+
+fetch("data/stations.json")
+  .then((r) => r.json())
+  .then((stations) => {
+    for (const st of stations) {
+      const marker = L.circleMarker([st.lat, st.lon], {
+        radius: 9, weight: 1.5, color: "#333",
+        fillColor: STATUS_COLORS.unknown, fillOpacity: 0.95,
+      }).addTo(gaugeLayer);
+      marker.bindPopup(stationPopup(st, null, "", "unknown"), { minWidth: 220 });
+      gaugeMarkers[st.id] = marker;
+    }
+    const refreshAll = () => stations.forEach(refreshStation);
+    refreshAll();
+    setInterval(refreshAll, 6 * 60 * 1000);
+  })
+  .catch((err) => console.error("failed to load stations.json:", err));
+
+// ------------------------------------------------------------------ controls
+L.control.layers(
+  { "Light map": positron, "Satellite": imagery },
+  { "FEMA flood zones (zoom in)": fema, ...overlays },
+  { collapsed: false }
+).addTo(map);
+
+const titlePanel = L.control({ position: "topleft" });
+titlePanel.onAdd = () => {
+  const div = L.DomUtil.create("div", "panel");
+  div.innerHTML =
+    `<h1>Hampton Roads Flood Map</h1>
+     <div class="subtitle">Sea level rise &middot; FEMA zones &middot; districts &middot; live tides</div>
+     <label>Sea level rise: <span class="slr-value" id="slr-value">off</span></label>
+     <input type="range" id="slr-slider" min="0" max="10" step="1" value="0">
+     <div class="hint">Feet above today's high tide line (MHHW). NOAA scenario
+     inundation, not a forecast.</div>`;
+  L.DomEvent.disableClickPropagation(div);
+  return div;
+};
+titlePanel.addTo(map);
+document.getElementById("slr-slider")
+  .addEventListener("input", (e) => setSlr(parseInt(e.target.value, 10)));
+
+const legend = L.control({ position: "bottomleft" });
+legend.onAdd = () => {
+  const div = L.DomUtil.create("div", "panel legend");
+  div.innerHTML =
+    `<b>Legend</b><br>
+     <span class="swatch" style="background:#2171b5"></span>SLR inundation (NOAA)<br>
+     <span class="swatch" style="background:#00e6ff"></span>FEMA 1% annual chance (100-yr)<br>
+     <span class="swatch" style="background:#ffaa00"></span>FEMA 0.2% annual chance (500-yr)<br>
+     <span class="line-swatch" style="border-color:#6a3d9a"></span>Congressional district<br>
+     <span class="line-swatch" style="border-color:#e31a1c"></span>State Senate district<br>
+     <span class="line-swatch" style="border-color:#1f78b4"></span>House of Delegates district<br>
+     <b>Tide gauges</b><br>
+     <span class="dot" style="background:#31a354"></span>Normal
+     <span class="dot" style="background:#fee08b"></span>Near flood<br>
+     <span class="dot" style="background:#fc8d59"></span>Minor
+     <span class="dot" style="background:#d7301f"></span>Moderate
+     <span class="dot" style="background:#7a0177"></span>Major`;
+  return div;
+};
+legend.addTo(map);
+</script>
+</body>
+</html>

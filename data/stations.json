@@ -1,0 +1,60 @@
+[
+  {
+    "id": "8638610",
+    "name": "Sewells Point",
+    "lat": 36.94278,
+    "lon": -76.32861,
+    "thresholds_mllw": {
+      "action": 4.0,
+      "minor": 4.5,
+      "moderate": 5.5,
+      "major": 6.5
+    }
+  },
+  {
+    "id": "8639348",
+    "name": "Money Point",
+    "lat": 36.778194,
+    "lon": -76.301865,
+    "thresholds_mllw": {
+      "action": 4.51,
+      "minor": 5.01,
+      "moderate": 6.01,
+      "major": 7.01
+    }
+  },
+  {
+    "id": "8638863",
+    "name": "Chesapeake Bay Bridge Tunnel",
+    "lat": 36.9667,
+    "lon": -76.1133,
+    "thresholds_mllw": {
+      "minor": 4.91,
+      "moderate": 6.23
+    }
+  },
+  {
+    "id": "8637689",
+    "name": "Yorktown USCG Training Center",
+    "lat": 37.2265,
+    "lon": -76.478806,
+    "thresholds_mllw": {
+      "action": 4.0,
+      "minor": 4.5,
+      "moderate": 5.0,
+      "major": 5.5
+    }
+  },
+  {
+    "id": "8632200",
+    "name": "Kiptopeke",
+    "lat": 37.1652,
+    "lon": -75.9884,
+    "thresholds_mllw": {
+      "action": 3.99,
+      "minor": 4.5,
+      "moderate": 5.0,
+      "major": 5.49
+    }
+  }
+]
