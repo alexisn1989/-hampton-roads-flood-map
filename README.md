@@ -18,6 +18,16 @@ Gauge markers are colored by the latest observation against NWS flood
 thresholds (converted to feet above MLLW so they compare directly with the
 live reading).
 
+## Property lookup
+
+Type an address (or right-click anywhere, or drag the pin) to get a
+point-specific report: FEMA flood zone, the lowest NOAA sea-level-rise
+scenario that inundates the spot, the districts that represent it, and the
+nearest tide gauge. Geocoding is OpenStreetMap Nominatim (the Census
+geocoder doesn't send CORS headers); zone and SLR values are queried live
+from FEMA NFHL and NOAA at the clicked point. Screening info only — not a
+flood insurance determination.
+
 ## Run it
 
 ```

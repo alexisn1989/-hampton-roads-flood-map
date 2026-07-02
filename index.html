@@ -26,6 +26,26 @@
   .slr-value { font-size: 13px; font-weight: 700; color: #0b5394; }
   .panel .hint { font-size: 11px; color: #666; margin-top: 4px; }
 
+  .addr-row { display: flex; gap: 5px; margin-top: 4px; }
+  .addr-row input {
+    flex: 1; font-size: 12px; padding: 4px 6px;
+    border: 1px solid #bbb; border-radius: 4px;
+  }
+  .addr-row button {
+    font-size: 12px; padding: 4px 10px; border: none; border-radius: 4px;
+    background: #0b5394; color: #fff; cursor: pointer;
+  }
+  .addr-row button:hover { background: #073763; }
+  #addr-status { min-height: 14px; }
+
+  .risk-popup { font-size: 12.5px; line-height: 1.45; }
+  .risk-popup h3 { margin: 0 0 4px; font-size: 13.5px; }
+  .risk-popup .zone-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-weight: 700; font-size: 11px; color: #fff;
+  }
+  .risk-popup ul { margin: 2px 0 4px; padding-left: 16px; }
+
   .legend { line-height: 1.5; font-size: 12px; }
   .legend .swatch {
     display: inline-block; width: 14px; height: 14px;
@@ -104,6 +124,7 @@ const fema = new FemaLayer("", {
 
 // ------------------------------------------------------- district overlays
 const overlays = {};
+const districtData = {}; // layer label -> raw GeoJSON, for point-in-polygon lookups
 
 function districtLayer(url, style, popupFn, layerLabel) {
   const layer = L.geoJSON(null, {
@@ -116,7 +137,7 @@ function districtLayer(url, style, popupFn, layerLabel) {
   });
   fetch(url)
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then((geojson) => layer.addData(geojson))
+    .then((geojson) => { layer.addData(geojson); districtData[layerLabel] = geojson; })
     .catch((err) => console.error(`failed to load ${url}:`, err));
   overlays[layerLabel] = layer;
   return layer;
@@ -162,6 +183,7 @@ const gaugeLayer = L.layerGroup();
 overlays["Tide gauges (live)"] = gaugeLayer;
 gaugeLayer.addTo(map);
 const gaugeMarkers = {}; // station id -> circleMarker
+let stationsData = [];   // loaded station list, for nearest-gauge lookups
 
 function classify(obs, thresholds) {
   if (obs === null || !thresholds) return "unknown";
@@ -217,6 +239,7 @@ async function refreshStation(st) {
 fetch("data/stations.json")
   .then((r) => r.json())
   .then((stations) => {
+    stationsData = stations;
     for (const st of stations) {
       const marker = L.circleMarker([st.lat, st.lon], {
         radius: 9, weight: 1.5, color: "#333",
@@ -230,6 +253,182 @@ fetch("data/stations.json")
     setInterval(refreshAll, 6 * 60 * 1000);
   })
   .catch((err) => console.error("failed to load stations.json:", err));
+
+// ---------------------------------------------------- property flood lookup
+// Even-odd ray casting across all rings, so holes are handled correctly.
+function ringsContain(rings, lon, lat) {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if ((yi > lat) !== (yj > lat) &&
+          lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+function findDistrict(layerLabel, lon, lat) {
+  const geojson = districtData[layerLabel];
+  if (!geojson) return null;
+  for (const feature of geojson.features) {
+    const geom = feature.geometry;
+    const polys = geom.type === "MultiPolygon" ? geom.coordinates
+      : geom.type === "Polygon" ? [geom.coordinates] : [];
+    if (polys.some((rings) => ringsContain(rings, lon, lat))) {
+      return feature.properties;
+    }
+  }
+  return null;
+}
+
+async function queryFemaZone(lon, lat) {
+  const url = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query" +
+    `?geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326` +
+    "&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY" +
+    "&returnGeometry=false&f=json";
+  const data = await (await fetch(url)).json();
+  if (!data.features || !data.features.length) return { text: "Not in a mapped FEMA flood zone here", color: "#31a354" };
+  const { FLD_ZONE: zone, ZONE_SUBTY: subty } = data.features[0].attributes;
+  if (subty && subty.includes("OPEN WATER")) return { text: "Open water", color: "#555" };
+  if (zone && zone.startsWith("V")) {
+    return { text: `Zone ${zone} — high risk: 1% annual chance flood with coastal wave hazard`, color: "#d7301f" };
+  }
+  if (zone && zone.startsWith("A")) {
+    return { text: `Zone ${zone} — high risk: 1% annual chance (100-year) floodplain`, color: "#d7301f" };
+  }
+  if (zone === "X" && subty && subty.includes("0.2 PCT")) {
+    return { text: "Zone X (shaded) — moderate risk: 0.2% annual chance (500-year)", color: "#fc8d59" };
+  }
+  if (zone === "X") return { text: "Zone X — minimal flood hazard", color: "#31a354" };
+  if (zone === "D") return { text: "Zone D — flood risk not determined", color: "#999" };
+  return { text: `Zone ${zone}${subty ? " (" + subty.toLowerCase() + ")" : ""}`, color: "#999" };
+}
+
+async function querySlr(lon, lat) {
+  const extent = `${lon - 0.01},${lat - 0.01},${lon + 0.01},${lat + 0.01}`;
+  const probe = async (ft) => {
+    const url = `https://coast.noaa.gov/arcgis/rest/services/dc_slr/slr_${ft}ft/MapServer/identify` +
+      `?geometry=${lon},${lat}&geometryType=esriGeometryPoint&sr=4326&layers=all` +
+      `&tolerance=1&mapExtent=${extent}&imageDisplay=400,400,96&returnGeometry=false&f=json`;
+    const data = await (await fetch(url)).json();
+    const names = (data.results || []).map((r) => r.layerName || "");
+    return {
+      ft,
+      inundated: names.some((n) => n.includes("Depth")),
+      lowlying: names.some((n) => n.includes("Low-lying")),
+    };
+  };
+  const results = await Promise.allSettled([...Array(10)].map((_, i) => probe(i + 1)));
+  const ok = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  if (!ok.length) throw new Error("all SLR probes failed");
+  const inundatedFt = ok.filter((r) => r.inundated).map((r) => r.ft).sort((a, b) => a - b)[0];
+  const lowlyingFt = ok.filter((r) => r.lowlying).map((r) => r.ft).sort((a, b) => a - b)[0];
+  if (inundatedFt !== undefined) {
+    return { text: `Inundated at +${inundatedFt} ft of sea level rise`, color: inundatedFt <= 3 ? "#d7301f" : "#fc8d59" };
+  }
+  if (lowlyingFt !== undefined) {
+    return { text: `Low-lying (potentially isolated) area at +${lowlyingFt} ft of sea level rise`, color: "#fc8d59" };
+  }
+  return { text: "Not inundated in NOAA scenarios up to +10 ft", color: "#31a354" };
+}
+
+function nearestGauge(lon, lat) {
+  if (!stationsData.length) return null;
+  const toRad = (d) => (d * Math.PI) / 180;
+  let best = null;
+  for (const st of stationsData) {
+    const dLat = toRad(st.lat - lat);
+    const dLon = toRad(st.lon - lon);
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat)) * Math.cos(toRad(st.lat)) * Math.sin(dLon / 2) ** 2;
+    const miles = 3959 * 2 * Math.asin(Math.sqrt(a));
+    if (!best || miles < best.miles) best = { st, miles };
+  }
+  return best;
+}
+
+let lookupMarker = null;
+
+async function riskLookup(lat, lon, label) {
+  if (!lookupMarker) {
+    lookupMarker = L.marker([lat, lon], { draggable: true }).addTo(map);
+    lookupMarker.bindPopup("", { minWidth: 260, maxWidth: 320 });
+    lookupMarker.on("dragend", () => {
+      const p = lookupMarker.getLatLng();
+      riskLookup(p.lat, p.lng, null);
+    });
+  } else {
+    lookupMarker.setLatLng([lat, lon]);
+  }
+  lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
+
+  const [femaRes, slrRes] = await Promise.allSettled([queryFemaZone(lon, lat), querySlr(lon, lat)]);
+  const unavailable = { text: "unavailable right now", color: "#999" };
+  const femaZone = femaRes.status === "fulfilled" ? femaRes.value : unavailable;
+  const slr = slrRes.status === "fulfilled" ? slrRes.value : unavailable;
+
+  const cd = findDistrict("Congressional districts (2021)", lon, lat);
+  const senate = findDistrict("State Senate districts (2024)", lon, lat);
+  const house = findDistrict("House of Delegates districts (2024)", lon, lat);
+  const locality = findDistrict("City / county boundaries", lon, lat);
+  const gauge = nearestGauge(lon, lat);
+
+  const reps = [
+    cd && `Congressional District ${cd.DISTRICT}`,
+    senate && senate.NAME,
+    house && house.NAME,
+  ].filter(Boolean);
+
+  lookupMarker.setPopupContent(
+    `<div class="risk-popup">
+       <h3>${label || `${lat.toFixed(5)}, ${lon.toFixed(5)}`}</h3>
+       ${locality ? `<small>${locality.NAME}</small><br>` : ""}
+       <b>FEMA:</b> <span class="zone-badge" style="background:${femaZone.color}">&nbsp;</span>
+       ${femaZone.text}<br>
+       <b>Sea level rise:</b> <span class="zone-badge" style="background:${slr.color}">&nbsp;</span>
+       ${slr.text}<br>
+       <b>Represented by:</b>
+       ${reps.length ? `<ul>${reps.map((r) => `<li>${r}</li>`).join("")}</ul>` : " outside loaded district data<br>"}
+       ${gauge ? `<b>Nearest tide gauge:</b> ${gauge.st.name} (${gauge.miles.toFixed(1)} mi)<br>` : ""}
+       <small>Drag the pin or right-click the map to check another spot.
+       Screening info only — not a flood insurance determination.</small>
+     </div>`
+  );
+}
+
+const addrStatus = () => document.getElementById("addr-status");
+
+async function searchAddress() {
+  const q = document.getElementById("addr").value.trim();
+  if (!q) return;
+  addrStatus().textContent = "Searching…";
+  try {
+    // viewbox biases results toward Hampton Roads without excluding elsewhere
+    const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1" +
+      "&countrycodes=us&viewbox=-77.6,37.7,-75.55,36.5&q=" + encodeURIComponent(q);
+    const results = await (await fetch(url)).json();
+    if (!results.length) {
+      addrStatus().textContent = "Address not found — try adding city and VA.";
+      return;
+    }
+    const { lat, lon, display_name } = results[0];
+    const latN = parseFloat(lat);
+    const lonN = parseFloat(lon);
+    const inRegion = lonN > -77.6 && lonN < -75.55 && latN > 36.5 && latN < 37.7;
+    addrStatus().textContent = inRegion ? "" : "Note: outside Hampton Roads — flood layers may not cover this spot.";
+    map.setView([latN, lonN], 16);
+    riskLookup(latN, lonN, display_name.split(",").slice(0, 3).join(","));
+  } catch (err) {
+    console.error("geocode failed:", err);
+    addrStatus().textContent = "Address search unavailable right now.";
+  }
+}
+
+map.on("contextmenu", (e) => riskLookup(e.latlng.lat, e.latlng.lng, null));
 
 // ------------------------------------------------------------------ controls
 L.control.layers(
@@ -247,13 +446,24 @@ titlePanel.onAdd = () => {
      <label>Sea level rise: <span class="slr-value" id="slr-value">off</span></label>
      <input type="range" id="slr-slider" min="0" max="10" step="1" value="0">
      <div class="hint">Feet above today's high tide line (MHHW). NOAA scenario
-     inundation, not a forecast.</div>`;
+     inundation, not a forecast.</div>
+     <label for="addr">Check a property</label>
+     <div class="addr-row">
+       <input id="addr" type="text" placeholder="e.g. 500 E Main St, Norfolk">
+       <button id="addr-btn">Go</button>
+     </div>
+     <div class="hint" id="addr-status">Or right-click anywhere on the map.</div>`;
   L.DomEvent.disableClickPropagation(div);
+  L.DomEvent.disableScrollPropagation(div);
   return div;
 };
 titlePanel.addTo(map);
 document.getElementById("slr-slider")
   .addEventListener("input", (e) => setSlr(parseInt(e.target.value, 10)));
+document.getElementById("addr-btn").addEventListener("click", searchAddress);
+document.getElementById("addr").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchAddress();
+});
 
 const legend = L.control({ position: "bottomleft" });
 legend.onAdd = () => {
