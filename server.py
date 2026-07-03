@@ -130,6 +130,28 @@ class ReportRequest(BaseModel):
     lookup: dict
 
 
+@app.get("/api/health")
+def health() -> dict:
+    """Deployment diagnostics — booleans only, never secret values."""
+    _ensure_api_key()
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    # Surface near-miss env var names (e.g. a typo like "Anthorpic") without
+    # exposing anything: report names only, for vars whose name hints at intent.
+    suspects = [
+        name for name in os.environ
+        if name != "ANTHROPIC_API_KEY"
+        and ("ANTHROP" in name.upper() or "CLAUDE" in name.upper())
+    ]
+    return {
+        "status": "ok",
+        "model": MODEL,
+        "api_key_configured": bool(key.strip()),
+        "similar_env_var_names": suspects,
+        "reports_today": _daily_count,
+        "daily_limit": DAILY_LIMIT,
+    }
+
+
 @app.post("/api/report")
 def generate_report(req: ReportRequest, request: Request) -> dict:
     _check_ip_rate_limit(_client_ip(request))
