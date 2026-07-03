@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hampton Roads Flood Map</title>
+<title>FloodWatchIQ — Hampton Roads Flood Map</title>
+<link rel="icon" type="image/png" href="assets/favicon.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -20,6 +21,7 @@
     max-width: 300px;
   }
   .panel h1 { font-size: 16px; margin: 0 0 2px; }
+  .brand-logo { display: block; width: 100%; max-width: 260px; margin: 0 0 4px; }
   .panel .subtitle { font-size: 11px; color: #555; margin-bottom: 8px; }
   .panel label { font-size: 12px; font-weight: 600; display: block; margin-top: 6px; }
   .panel input[type="range"] { width: 100%; }
@@ -612,8 +614,8 @@ const titlePanel = L.control({ position: "topleft" });
 titlePanel.onAdd = () => {
   const div = L.DomUtil.create("div", "panel");
   div.innerHTML =
-    `<h1>Hampton Roads Flood Map</h1>
-     <div class="subtitle">Sea level rise &middot; FEMA zones &middot; districts &middot; live tides</div>
+    `<img src="assets/logo.png" alt="FloodWatchIQ — intelligent water monitoring" class="brand-logo">
+     <div class="subtitle">Hampton Roads &middot; sea level rise &middot; FEMA zones &middot; districts &middot; live tides</div>
      <label>Sea level rise: <span class="slr-value" id="slr-value">off</span></label>
      <input type="range" id="slr-slider" min="0" max="10" step="1" value="0">
      <div class="hint">Feet above today's high tide line (MHHW). NOAA scenario
