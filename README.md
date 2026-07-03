@@ -42,8 +42,8 @@ numbers. Reports are cached in memory by payload hash. Model defaults to
 ## Run it
 
 ```
-python prepare_data.py      # one-time: builds data/*.geojson + stations.json
-python server.py            # serves the map + AI report API on :8000
+pip install -r requirements.txt      # runtime deps only — no geopandas
+python server.py                     # serves the map + AI report API on :8000
 ```
 
 Then open http://localhost:8000
@@ -54,9 +54,18 @@ still works fully — only the AI report button degrades with an explanatory
 message. `python -m http.server` also still works for a no-backend static
 preview.
 
-`prepare_data.py` needs `geopandas` (with `shapely`/`pyproj`) and network
-access to Census TIGERweb and the NOAA metadata API. The generated files in
-`data/` are committed, so the map works without re-running it.
+`data/` is committed, so the map works out of the box without ever running
+`prepare_data.py`. If a source changes and you need to rebuild it:
+
+```
+pip install -r requirements-dev.txt  # adds geopandas (heavy — dev only)
+python prepare_data.py               # rebuilds data/*.geojson + stations.json
+```
+
+It needs `geopandas` (with `shapely`/`pyproj`) and network access to Census
+TIGERweb and the NOAA metadata API. `geopandas` is deliberately excluded
+from `requirements.txt` — it's not imported by `server.py`, and including it
+would slow every deploy build for a dependency the running app never uses.
 
 The congressional district source shapefile is read from the VoteIQ repo at
 `..\Vriginia_api_election\SCV Final 2021 Redistricting Plans\` — adjust
