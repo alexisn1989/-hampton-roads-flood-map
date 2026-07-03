@@ -68,6 +68,24 @@
   #report-body p { margin: 4px 0; }
   #report-body .report-note { color: #888; font-size: 11px; }
 
+  #alert-banner {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 1200; max-width: 480px; width: calc(100% - 660px); min-width: 260px;
+    display: none; border-left: 5px solid #b30000;
+  }
+  #alert-banner .alert-close {
+    float: right; border: none; background: none; font-size: 16px;
+    cursor: pointer; color: #666; line-height: 1;
+  }
+  #alert-banner .alert-item { font-size: 12.5px; margin: 3px 0; }
+  #alert-banner .alert-item b { font-size: 13px; }
+  #alert-banner details summary { cursor: pointer; font-weight: 700; font-size: 13px; }
+  #alert-banner details p { margin: 4px 0 2px; font-size: 12px; white-space: pre-line; }
+  #alert-banner .alert-when { color: #666; font-size: 11.5px; }
+  .alert-sev { display: inline-block; padding: 0 7px; border-radius: 9px;
+    color: #fff; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
+  .popup-alert { color: #b30000; font-weight: 600; }
+
   .legend { line-height: 1.5; font-size: 12px; }
   .legend .swatch {
     display: inline-block; width: 14px; height: 14px;
@@ -93,6 +111,10 @@
 </head>
 <body>
 <div id="map"></div>
+<div id="alert-banner" class="panel">
+  <button class="alert-close" onclick="dismissAlerts()">&times;</button>
+  <div id="alert-banner-body"></div>
+</div>
 <div id="report-panel" class="panel">
   <button class="report-close" onclick="document.getElementById('report-panel').style.display='none'">&times;</button>
   <b style="font-size:13px">AI flood risk report</b>
@@ -281,6 +303,83 @@ fetch("data/stations.json")
   })
   .catch((err) => console.error("failed to load stations.json:", err));
 
+// ----------------------------------------------------- NWS flood alerts
+// Region banner: pull all active VA alerts, keep flood-related events that
+// name a Hampton Roads locality. areaDesc can span states (a VA alert may
+// list NC's Surry County), so this is deliberately flood-filtered and
+// word-bounded; slightly over-inclusive beats missing a live warning.
+const FLOOD_EVENT_RE = /flood|hurricane|tropical|surge|tsunami/i;
+const HR_LOCALITY_RE = new RegExp(
+  "\\b(Norfolk|Virginia Beach|Chesapeake|Portsmouth|Suffolk|Hampton|Newport News|" +
+  "Poquoson|York|James City|Williamsburg|Gloucester|Isle of Wight|Surry|" +
+  "Southampton|Franklin)\\b");
+const SEVERITY_COLORS = { Extreme: "#7a0177", Severe: "#b30000", Moderate: "#e07000", Minor: "#c9a400" };
+const SEVERITY_RANK = { Extreme: 0, Severe: 1, Moderate: 2, Minor: 3 };
+
+const dismissedAlertIds = new Set();
+
+function fmtAlertEnd(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return "until " + d.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+function renderAlertBanner(alerts) {
+  const banner = document.getElementById("alert-banner");
+  const body = document.getElementById("alert-banner-body");
+  const visible = alerts.filter((a) => !dismissedAlertIds.has(a.id));
+  if (!visible.length) { banner.style.display = "none"; return; }
+  visible.sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
+  body.innerHTML = visible.map((a) => {
+    const color = SEVERITY_COLORS[a.severity] || "#888";
+    const desc = (a.description || "").trim().slice(0, 600);
+    return `<details class="alert-item">
+       <summary><span class="alert-sev" style="background:${color}">${a.severity || "?"}</span>
+       ⚠ ${a.event} <span class="alert-when">${fmtAlertEnd(a.ends)}</span></summary>
+       <p><b>${a.headline || ""}</b></p>
+       <p>${a.areaDesc || ""}</p>
+       ${desc ? `<p>${desc}&hellip;</p>` : ""}
+     </details>`;
+  }).join("");
+  banner.style.display = "block";
+}
+
+let _lastAlerts = [];
+async function refreshFloodAlerts() {
+  try {
+    const data = await (await fetch("https://api.weather.gov/alerts/active?area=VA")).json();
+    _lastAlerts = (data.features || [])
+      .map((f) => ({ id: f.properties.id || f.id, ...f.properties }))
+      .filter((p) => FLOOD_EVENT_RE.test(p.event || "") && HR_LOCALITY_RE.test(p.areaDesc || ""));
+    renderAlertBanner(_lastAlerts);
+  } catch (err) {
+    console.error("NWS alerts fetch failed:", err);
+  }
+}
+
+function dismissAlerts() {
+  _lastAlerts.forEach((a) => dismissedAlertIds.add(a.id));
+  document.getElementById("alert-banner").style.display = "none";
+}
+
+refreshFloodAlerts();
+setInterval(refreshFloodAlerts, 5 * 60 * 1000);
+
+// Per-property: NWS resolves the point to its alert polygons/zones server-side.
+async function queryPointAlerts(lon, lat) {
+  const url = `https://api.weather.gov/alerts/active?point=${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const data = await (await fetch(url)).json();
+  return (data.features || [])
+    .map((f) => f.properties)
+    .filter((p) => FLOOD_EVENT_RE.test(p.event || ""))
+    .map((p) => ({
+      event: p.event,
+      severity: p.severity,
+      headline: p.headline,
+      ends: p.ends || p.expires,
+    }));
+}
+
 // ---------------------------------------------------- property flood lookup
 // Even-odd ray casting across all rings, so holes are handled correctly.
 function ringsContain(rings, lon, lat) {
@@ -443,15 +542,24 @@ async function riskLookup(lat, lon, label) {
   }
   lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
 
-  const [femaRes, slrRes, elevRes, claimsRes] = await Promise.allSettled([
+  const [femaRes, slrRes, elevRes, claimsRes, alertsRes] = await Promise.allSettled([
     queryFemaZone(lon, lat), querySlr(lon, lat),
     queryElevation(lon, lat), queryClaims(lon, lat),
+    queryPointAlerts(lon, lat),
   ]);
   const unavailable = { text: "unavailable right now", color: "#999" };
   const femaZone = femaRes.status === "fulfilled" ? femaRes.value : unavailable;
   const slr = slrRes.status === "fulfilled" ? slrRes.value : unavailable;
   const elevation = elevRes.status === "fulfilled" ? elevRes.value : null;
   const claims = claimsRes.status === "fulfilled" ? claimsRes.value : null;
+  const pointAlerts = alertsRes.status === "fulfilled" ? alertsRes.value : null;
+
+  let alertLine = "";
+  if (pointAlerts && pointAlerts.length) {
+    alertLine = pointAlerts.map((a) =>
+      `<span class="popup-alert">⚠ ${a.event} ${fmtAlertEnd(a.ends)}</span><br>`
+    ).join("");
+  }
 
   let elevLine = "";
   if (elevation !== null) {
@@ -497,6 +605,7 @@ async function riskLookup(lat, lon, label) {
     sea_level_rise: slrRes.status === "fulfilled" ? slr.text : null,
     ground_elevation_ft_navd88: elevation !== null ? +elevation.toFixed(1) : null,
     nfip_claims_in_census_tract: claims,
+    active_nws_flood_alerts: pointAlerts,
     represented_by: reps,
     nearest_tide_gauge: gauge
       ? { name: gauge.st.name, miles: +gauge.miles.toFixed(1),
@@ -508,6 +617,7 @@ async function riskLookup(lat, lon, label) {
     `<div class="risk-popup">
        <h3>${label || `${lat.toFixed(5)}, ${lon.toFixed(5)}`}</h3>
        ${locality ? `<small>${locality.NAME}</small><br>` : ""}
+       ${alertLine}
        <b>FEMA:</b> <span class="zone-badge" style="background:${femaZone.color}">&nbsp;</span>
        ${femaZone.text}<br>
        <b>Sea level rise:</b> <span class="zone-badge" style="background:${slr.color}">&nbsp;</span>
