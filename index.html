@@ -37,8 +37,21 @@
     max-width: 300px;
   }
   .panel h1 { font-size: 16px; margin: 0 0 2px; }
-  .brand-logo { display: block; width: 100%; max-width: 260px; margin: 0 0 4px; }
+  .brand-logo { display: block; width: 100%; max-width: 260px; margin: 0; }
   .panel .subtitle { font-size: 11px; color: #555; margin-bottom: 8px; }
+
+  .panel-header { display: flex; align-items: center; gap: 8px; }
+  .panel-header .brand-logo { margin: 0; flex: 1; }
+  .panel-toggle {
+    display: none; /* shown only on narrow screens, see media query below */
+    background: none; border: none; font-size: 18px; line-height: 1;
+    color: #0b5394; cursor: pointer; padding: 2px 8px; flex-shrink: 0;
+  }
+  .panel-body { margin-top: 6px; }
+  .panel-body.collapsed { display: none; }
+  @media (max-width: 480px) {
+    .panel-toggle { display: block; }
+  }
   .panel label { font-size: 12px; font-weight: 600; display: block; margin-top: 6px; }
   .panel input[type="range"] { width: 100%; }
   .slr-value { font-size: 13px; font-weight: 700; color: #0b5394; }
@@ -54,6 +67,15 @@
     background: #0b5394; color: #fff; cursor: pointer;
   }
   .addr-row button:hover { background: #073763; }
+
+  .demo-chips { margin-top: 6px; line-height: 1.9; }
+  .demo-label { font-size: 11px; color: #666; margin-right: 4px; }
+  .chip {
+    font-size: 11px; padding: 3px 9px; margin-right: 4px;
+    border: 1px solid #b8cfe0; border-radius: 12px;
+    background: #eef5fb; color: #0b5394; cursor: pointer;
+  }
+  .chip:hover { background: #d9ebfa; border-color: #0b5394; }
   #addr-status { min-height: 14px; }
 
   .risk-popup { font-size: 12.5px; line-height: 1.45; }
@@ -190,6 +212,10 @@ const fema = new FemaLayer("", {
 // ------------------------------------------------------- district overlays
 const overlays = {};
 const districtData = {}; // layer label -> raw GeoJSON, for point-in-polygon lookups
+// Resolved once every district layer + the station list has loaded, so a
+// URL-driven lookup (shared link) can wait for accurate district/gauge data
+// instead of racing the initial fetches.
+const dataReadyPromises = [];
 
 function districtLayer(url, style, popupFn, layerLabel) {
   const layer = L.geoJSON(null, {
@@ -200,10 +226,11 @@ function districtLayer(url, style, popupFn, layerLabel) {
       lyr.on("mouseout", () => lyr.setStyle({ weight: style.weight }));
     },
   });
-  fetch(url)
+  const ready = fetch(url)
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then((geojson) => { layer.addData(geojson); districtData[layerLabel] = geojson; })
     .catch((err) => console.error(`failed to load ${url}:`, err));
+  dataReadyPromises.push(ready);
   overlays[layerLabel] = layer;
   return layer;
 }
@@ -301,7 +328,7 @@ async function refreshStation(st) {
   marker.setPopupContent(stationPopup(st, obs, obsTime, status));
 }
 
-fetch("data/stations.json")
+dataReadyPromises.push(fetch("data/stations.json")
   .then((r) => r.json())
   .then((stations) => {
     stationsData = stations;
@@ -317,7 +344,9 @@ fetch("data/stations.json")
     refreshAll();
     setInterval(refreshAll, 6 * 60 * 1000);
   })
-  .catch((err) => console.error("failed to load stations.json:", err));
+  .catch((err) => console.error("failed to load stations.json:", err)));
+
+const dataReady = Promise.all(dataReadyPromises);
 
 // ----------------------------------------------------- NWS flood alerts
 // Region banner: pull all active VA alerts, keep flood-related events that
@@ -556,6 +585,15 @@ async function riskLookup(lat, lon, label) {
   } else {
     lookupMarker.setLatLng([lat, lon]);
   }
+
+  // Leaflet's popup autoPan only avoids the map viewport edges — it has no
+  // idea our title panel is a fixed overlay sitting on top of the map, so a
+  // popup can open right underneath it. Reserve down to the panel's bottom
+  // edge (not just its own height — the zoom +/- control stacks above it in
+  // the same corner, so the panel itself doesn't start at y=0).
+  const panelEl = document.querySelector(".leaflet-top.leaflet-left .panel");
+  const reserveTop = panelEl ? panelEl.getBoundingClientRect().bottom + 15 : 15;
+  lookupMarker.getPopup().options.autoPanPaddingTopLeft = L.point(10, reserveTop);
   lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
 
   const [femaRes, slrRes, elevRes, claimsRes, alertsRes] = await Promise.allSettled([
@@ -629,6 +667,13 @@ async function riskLookup(lat, lon, label) {
       : null,
   };
 
+  // Make this exact lookup shareable: encode lat/lon (exact replay, no
+  // geocoding needed) and the label (for the URL's readability) as query
+  // params, without adding a history entry per drag/click.
+  const params = new URLSearchParams({ lat: lastLookup.lat, lon: lastLookup.lon });
+  if (label) params.set("address", label);
+  history.replaceState(null, "", "?" + params.toString());
+
   lookupMarker.setPopupContent(
     `<div class="risk-popup">
        <h3>${label || `${lat.toFixed(5)}, ${lon.toFixed(5)}`}</h3>
@@ -647,13 +692,33 @@ async function riskLookup(lat, lon, label) {
        Screening info only — not a flood insurance determination.</small>
      </div>`
   );
+
+  // setPopupContent() alone doesn't re-run Leaflet's autoPan for the popup's
+  // new (much taller) size — it only ran once, against the tiny "Checking
+  // flood risk…" placeholder. Reopen so autoPan recalculates against the
+  // real content and the padding reserved for the title panel actually holds.
+  if (lookupMarker.isPopupOpen()) {
+    lookupMarker.closePopup();
+    lookupMarker.openPopup();
+  }
 }
 
 const addrStatus = () => document.getElementById("addr-status");
 
+function collapsePanelOnMobile() {
+  if (window.innerWidth >= 480) return;
+  const body = document.getElementById("panel-body");
+  const toggle = document.getElementById("panel-toggle");
+  if (body && !body.classList.contains("collapsed")) {
+    body.classList.add("collapsed");
+    toggle.textContent = "▾";
+  }
+}
+
 async function searchAddress() {
   const q = document.getElementById("addr").value.trim();
   if (!q) return;
+  collapsePanelOnMobile(); // give the result popup full room on narrow screens
   addrStatus().textContent = "Searching…";
   try {
     // viewbox biases results toward Hampton Roads without excluding elsewhere
@@ -730,28 +795,51 @@ async function generateReport() {
 }
 
 // ------------------------------------------------------------------ controls
+// Expanded by default on desktop; collapsed to an icon on narrow screens,
+// where the full list would otherwise overlap the title/search panel.
 L.control.layers(
   { "Light map": positron, "Satellite": imagery },
   { "FEMA flood zones (zoom in)": fema, ...overlays },
-  { collapsed: false }
+  { collapsed: window.innerWidth < 600 }
 ).addTo(map);
 
 const titlePanel = L.control({ position: "topleft" });
 titlePanel.onAdd = () => {
   const div = L.DomUtil.create("div", "panel");
+  // Narrow screens: default collapsed (logo bar only) so the map — and any
+  // popup opened near the top of the screen — has room. Desktop: expanded,
+  // and the toggle button is hidden entirely via CSS media query.
+  const startCollapsed = window.innerWidth < 480;
   div.innerHTML =
-    `<img src="assets/logo.png" alt="FloodWatchIQ — intelligent water monitoring" class="brand-logo">
-     <div class="subtitle">Hampton Roads &middot; sea level rise &middot; FEMA zones &middot; districts &middot; live tides</div>
-     <label>Sea level rise: <span class="slr-value" id="slr-value">off</span></label>
-     <input type="range" id="slr-slider" min="0" max="10" step="1" value="0">
-     <div class="hint">Feet above today's high tide line (MHHW). NOAA scenario
-     inundation, not a forecast.</div>
-     <label for="addr">Check a property</label>
-     <div class="addr-row">
-       <input id="addr" type="text" placeholder="e.g. 500 E Main St, Norfolk">
-       <button id="addr-btn">Go</button>
+    `<div class="panel-header">
+       <img src="assets/logo.png" alt="FloodWatchIQ — intelligent water monitoring" class="brand-logo">
+       <button class="panel-toggle" id="panel-toggle" aria-label="Toggle panel">${startCollapsed ? "▾" : "▴"}</button>
      </div>
-     <div class="hint" id="addr-status">Or right-click anywhere on the map.</div>`;
+     <div class="panel-body${startCollapsed ? " collapsed" : ""}" id="panel-body">
+       <div class="subtitle">Hampton Roads &middot; sea level rise &middot; FEMA zones &middot; districts &middot; live tides</div>
+       <label>Sea level rise: <span class="slr-value" id="slr-value">off</span></label>
+       <input type="range" id="slr-slider" min="0" max="10" step="1" value="0">
+       <div class="hint">Feet above today's high tide line (MHHW). NOAA scenario
+       inundation, not a forecast.</div>
+       <label for="addr">Check a property</label>
+       <div class="addr-row">
+         <input id="addr" type="text" placeholder="e.g. 500 E Main St, Norfolk">
+         <button id="addr-btn">Go</button>
+       </div>
+       <div class="demo-chips">
+         <span class="demo-label">Try:</span>
+         <button class="chip" data-addr="441 Mowbray Arch, Norfolk, VA">The Hague, Norfolk</button>
+         <button class="chip" data-addr="3900 Sandpiper Rd, Virginia Beach, VA">Sandbridge oceanfront</button>
+         <button class="chip" data-addr="442 N Main St, Suffolk, VA">Downtown Suffolk</button>
+       </div>
+       <div class="hint" id="addr-status">Or right-click anywhere on the map.</div>
+     </div>`;
+  div.querySelector("#panel-toggle").addEventListener("click", () => {
+    const body = div.querySelector("#panel-body");
+    const toggle = div.querySelector("#panel-toggle");
+    body.classList.toggle("collapsed");
+    toggle.textContent = body.classList.contains("collapsed") ? "▾" : "▴";
+  });
   L.DomEvent.disableClickPropagation(div);
   L.DomEvent.disableScrollPropagation(div);
   return div;
@@ -763,6 +851,32 @@ document.getElementById("addr-btn").addEventListener("click", searchAddress);
 document.getElementById("addr").addEventListener("keydown", (e) => {
   if (e.key === "Enter") searchAddress();
 });
+document.querySelectorAll(".chip").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.getElementById("addr").value = btn.dataset.addr;
+    searchAddress();
+  });
+});
+
+// Shareable-link bootstrap: ?lat=&lon=(&address=) replays a lookup exactly,
+// no geocoding round trip. ?address= alone (no coords) falls back to the
+// normal geocode path. Waits for district/gauge data so the replayed
+// popup matches what the original visitor saw, not a partial one.
+(function bootstrapFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const lat = parseFloat(params.get("lat"));
+  const lon = parseFloat(params.get("lon"));
+  const address = params.get("address");
+  if (isFinite(lat) && isFinite(lon)) {
+    dataReady.then(() => {
+      map.setView([lat, lon], 16);
+      riskLookup(lat, lon, address || null);
+    });
+  } else if (address) {
+    document.getElementById("addr").value = address;
+    dataReady.then(searchAddress);
+  }
+})();
 
 const legend = L.control({ position: "bottomleft" });
 legend.onAdd = () => {
