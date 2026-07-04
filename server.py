@@ -49,6 +49,12 @@ Rules — these are absolute:
   alerts in effect at this location right now. Lead with them — they are
   time-sensitive. An empty list means no flood alerts are active, which says
   nothing about long-term risk.
+- nearest_tide_gauge.next_high_tide, when present, is a NEAR-TERM forecast
+  (the next high tide, hours away, from NOAA's astronomical predictions) —
+  distinct from both the current-moment alerts and the long-term SLR
+  scenarios. deltaText already states the comparison to flood stage
+  (e.g. "0.3 ft above minor flood stage") — restate it plainly, don't
+  recompute or second-guess the number.
 - This is screening information, not a flood insurance determination or legal
   advice — say so once, briefly.
 - Audience: a homeowner or buyer with no flood expertise. Short sentences,

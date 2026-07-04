@@ -285,6 +285,71 @@ function classify(obs, thresholds) {
   return "normal";
 }
 
+// ------------------------------------------------- next high tide forecast
+// Predictions are astronomical (don't need 6-min refresh like observations),
+// but "next" is relative to the current moment, so it's recomputed on every
+// render from a cached prediction window rather than refetched each time.
+const tidePredictions = {}; // station id -> [{t, v, type}]
+
+// All comparisons happen as zero-padded "YYYY-MM-DD HH:MM" strings in the
+// station's own Eastern time (what NOAA's API returns) — this sidesteps
+// Date/timezone parsing entirely: lexicographic string compare is exact for
+// this format, and it stays correct regardless of the visitor's own timezone.
+function easternNowParts() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
+}
+
+function fmtTide12h(hhmm) {
+  let [h, m] = hhmm.split(":").map(Number);
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+function tideDeltaText(heightFt, thresholds, status) {
+  if (!thresholds || status === "unknown") return "";
+  if (status !== "normal") {
+    return `${(heightFt - thresholds[status]).toFixed(1)} ft above ${status} stage`;
+  }
+  const lowestLevel = ["action", "minor", "moderate", "major"].find((l) => thresholds[l] !== undefined);
+  if (!lowestLevel) return "";
+  return `${(thresholds[lowestLevel] - heightFt).toFixed(1)} ft below ${lowestLevel} stage`;
+}
+
+async function fetchTidePredictions(stationId) {
+  const beginDate = easternNowParts().date.replace(/-/g, "");
+  const url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter" +
+    `?station=${stationId}&product=predictions&datum=MLLW&units=english` +
+    `&time_zone=lst_ldt&interval=hilo&format=json&begin_date=${beginDate}&range=48`;
+  const data = await (await fetch(url)).json();
+  return data.predictions || [];
+}
+
+// Pure — reads the cached prediction window, doesn't fetch. Safe to call on
+// every popup render (e.g. every 6 min) since "next" changes as time passes.
+function nextHighTideInfo(stationId, thresholds) {
+  const preds = tidePredictions[stationId];
+  if (!preds || !preds.length) return null;
+  const nowStr = `${easternNowParts().date} ${easternNowParts().time}`;
+  const next = preds.find((p) => p.type === "H" && p.t > nowStr);
+  if (!next) return null;
+  const [predDate, predTime] = next.t.split(" ");
+  const heightFt = parseFloat(next.v);
+  const status = classify(heightFt, thresholds);
+  const todayDate = nowStr.split(" ")[0];
+  return {
+    timeLabel: fmtTide12h(predTime) + (predDate === todayDate ? "" : " tomorrow"),
+    heightFt,
+    status,
+    deltaText: tideDeltaText(heightFt, thresholds, status),
+  };
+}
+
 function stationPopup(st, obs, obsTime, status) {
   const badge = `<span class="status-badge" style="background:${STATUS_COLORS[status]};` +
     `${status === "action" ? "color:#333;" : ""}">${STATUS_LABELS[status]}</span>`;
@@ -301,8 +366,16 @@ function stationPopup(st, obs, obsTime, status) {
   const obsHtml = obs === null
     ? "<i>live data unavailable</i>"
     : `<span class="obs">${obs.toFixed(2)} ft</span> MLLW<br><small>${obsTime}</small>`;
+  const tide = nextHighTideInfo(st.id, st.thresholds_mllw);
+  let tideHtml = "";
+  if (tide) {
+    const tideColor = STATUS_COLORS[tide.status] || STATUS_COLORS.unknown;
+    tideHtml = `<b>Next high tide:</b> ${tide.heightFt.toFixed(1)} ft at ${tide.timeLabel}` +
+      (tide.deltaText ? `<br><span style="color:${tideColor}">&mdash; ${tide.deltaText}</span>` : "") +
+      "<br><br>";
+  }
   return `<div class="station-popup"><b>${st.name}</b> &middot; NOAA ${st.id}<br>` +
-         `${badge}<br><br>${obsHtml}<br><br>` +
+         `${badge}<br><br>${obsHtml}<br><br>${tideHtml}` +
          (rows ? `<table>${rows}</table>` : "<i>no NWS flood thresholds published</i>") +
          `<br><small>Heights in feet above MLLW &middot; refreshes every 6 min</small></div>`;
 }
@@ -328,9 +401,19 @@ async function refreshStation(st) {
   marker.setPopupContent(stationPopup(st, obs, obsTime, status));
 }
 
+async function refreshTidePredictions(stations) {
+  await Promise.all(stations.map(async (st) => {
+    try {
+      tidePredictions[st.id] = await fetchTidePredictions(st.id);
+    } catch (err) {
+      console.error(`tide predictions ${st.id}:`, err);
+    }
+  }));
+}
+
 dataReadyPromises.push(fetch("data/stations.json")
   .then((r) => r.json())
-  .then((stations) => {
+  .then(async (stations) => {
     stationsData = stations;
     for (const st of stations) {
       const marker = L.circleMarker([st.lat, st.lon], {
@@ -340,9 +423,13 @@ dataReadyPromises.push(fetch("data/stations.json")
       marker.bindPopup(stationPopup(st, null, "", "unknown"), { minWidth: 220 });
       gaugeMarkers[st.id] = marker;
     }
+    await refreshTidePredictions(stations); // before first render, so it's not empty
     const refreshAll = () => stations.forEach(refreshStation);
     refreshAll();
     setInterval(refreshAll, 6 * 60 * 1000);
+    // Predictions are astronomical — they don't need a 6-min refresh, just a
+    // periodic top-up so the cached 48h window doesn't run dry in a long-open tab.
+    setInterval(() => refreshTidePredictions(stations), 6 * 60 * 60 * 1000);
   })
   .catch((err) => console.error("failed to load stations.json:", err)));
 
@@ -663,7 +750,8 @@ async function riskLookup(lat, lon, label) {
     represented_by: reps,
     nearest_tide_gauge: gauge
       ? { name: gauge.st.name, miles: +gauge.miles.toFixed(1),
-          flood_thresholds_ft_mllw: gauge.st.thresholds_mllw }
+          flood_thresholds_ft_mllw: gauge.st.thresholds_mllw,
+          next_high_tide: nextHighTideInfo(gauge.st.id, gauge.st.thresholds_mllw) }
       : null,
   };
 
@@ -687,6 +775,10 @@ async function riskLookup(lat, lon, label) {
        <b>Represented by:</b>
        ${reps.length ? `<ul>${reps.map((r) => `<li>${r}</li>`).join("")}</ul>` : " outside loaded district data<br>"}
        ${gauge ? `<b>Nearest tide gauge:</b> ${gauge.st.name} (${gauge.miles.toFixed(1)} mi)<br>` : ""}
+       ${lastLookup.nearest_tide_gauge && lastLookup.nearest_tide_gauge.next_high_tide
+         ? (t => `<b>Next high tide:</b> ${t.heightFt.toFixed(1)} ft at ${t.timeLabel}` +
+             (t.deltaText ? ` &mdash; ${t.deltaText}` : "") + "<br>")(lastLookup.nearest_tide_gauge.next_high_tide)
+         : ""}
        <button class="ai-btn" onclick="generateReport()">Generate AI report</button>
        <small>Drag the pin or right-click the map to check another spot.
        Screening info only — not a flood insurance determination.</small>
