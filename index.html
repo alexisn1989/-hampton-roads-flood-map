@@ -717,6 +717,46 @@ function nearestGauge(lon, lat) {
 let lookupMarker = null;
 let lastLookup = null; // structured result of the latest lookup, for the AI report
 
+// Client-side result cache: repeat lookups of the same spot (a re-clicked
+// demo chip, a reloaded shared URL, a search that geocodes to a point
+// already checked) skip NOAA/FEMA/USGS/OpenFEMA entirely instead of
+// re-fetching from scratch. Keyed to 5 decimal places (~1 m) — the same
+// rounding already used for the shareable-URL lat/lon, so a reload of that
+// exact URL is a guaranteed cache hit. Short TTL because tide forecasts and
+// NWS alerts are time-sensitive, not because the FEMA zone or elevation
+// would ever change — this is a "don't hammer free public APIs on obvious
+// repeats within one visit" cache, not a long-term one.
+const lookupCache = new Map();
+const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// All the network + district lookups for one point, cache-eligible as a
+// whole since every piece is a pure function of (lat, lon).
+async function computeLookupData(lat, lon) {
+  const [femaRes, slrRes, elevRes, claimsRes, alertsRes] = await Promise.allSettled([
+    queryFemaZone(lon, lat), querySlr(lon, lat),
+    queryElevation(lon, lat), queryClaims(lon, lat),
+    queryPointAlerts(lon, lat),
+  ]);
+  const unavailable = { text: "unavailable right now", color: "#999" };
+  const femaZone = femaRes.status === "fulfilled" ? femaRes.value : unavailable;
+  const slr = slrRes.status === "fulfilled" ? slrRes.value : unavailable;
+  const elevation = elevRes.status === "fulfilled" ? elevRes.value : null;
+  const claims = claimsRes.status === "fulfilled" ? claimsRes.value : null;
+  const pointAlerts = alertsRes.status === "fulfilled" ? alertsRes.value : null;
+
+  const cd = findDistrict("Congressional districts (2021)", lon, lat);
+  const senate = findDistrict("State Senate districts (2024)", lon, lat);
+  const house = findDistrict("House of Delegates districts (2024)", lon, lat);
+  const locality = findDistrict("City / county boundaries", lon, lat);
+  const gauge = nearestGauge(lon, lat);
+  const civic = locality ? civicData[locality.NAME] : null;
+
+  return {
+    femaRes, slrRes, femaZone, slr, elevation, claims, pointAlerts,
+    cd, senate, house, locality, gauge, civic,
+  };
+}
+
 async function riskLookup(lat, lon, label) {
   if (!lookupMarker) {
     lookupMarker = L.marker([lat, lon], { draggable: true }).addTo(map);
@@ -737,19 +777,19 @@ async function riskLookup(lat, lon, label) {
   const panelEl = document.querySelector(".leaflet-top.leaflet-left .panel");
   const reserveTop = panelEl ? panelEl.getBoundingClientRect().bottom + 15 : 15;
   lookupMarker.getPopup().options.autoPanPaddingTopLeft = L.point(10, reserveTop);
-  lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
 
-  const [femaRes, slrRes, elevRes, claimsRes, alertsRes] = await Promise.allSettled([
-    queryFemaZone(lon, lat), querySlr(lon, lat),
-    queryElevation(lon, lat), queryClaims(lon, lat),
-    queryPointAlerts(lon, lat),
-  ]);
-  const unavailable = { text: "unavailable right now", color: "#999" };
-  const femaZone = femaRes.status === "fulfilled" ? femaRes.value : unavailable;
-  const slr = slrRes.status === "fulfilled" ? slrRes.value : unavailable;
-  const elevation = elevRes.status === "fulfilled" ? elevRes.value : null;
-  const claims = claimsRes.status === "fulfilled" ? claimsRes.value : null;
-  const pointAlerts = alertsRes.status === "fulfilled" ? alertsRes.value : null;
+  const cacheKey = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  const cached = lookupCache.get(cacheKey);
+  const isFreshHit = cached && Date.now() - cached.ts < LOOKUP_CACHE_TTL_MS;
+  if (!isFreshHit) {
+    lookupMarker.setPopupContent("<div class='risk-popup'>Checking flood risk&hellip;</div>").openPopup();
+  }
+
+  const data = isFreshHit ? cached.data : await computeLookupData(lat, lon);
+  if (!isFreshHit) lookupCache.set(cacheKey, { ts: Date.now(), data });
+
+  const { femaRes, slrRes, femaZone, slr, elevation, claims, pointAlerts,
+          cd, senate, house, locality, gauge, civic } = data;
 
   let alertLine = "";
   if (pointAlerts && pointAlerts.length) {
@@ -777,13 +817,6 @@ async function riskLookup(lat, lon, label) {
       : `<b>NFIP claims:</b> ${claims.count.toLocaleString()} in this census tract ` +
         `(${formatMoney(claims.totalPaid)} paid, most recent ${claims.lastYear})<br>`;
   }
-
-  const cd = findDistrict("Congressional districts (2021)", lon, lat);
-  const senate = findDistrict("State Senate districts (2024)", lon, lat);
-  const house = findDistrict("House of Delegates districts (2024)", lon, lat);
-  const locality = findDistrict("City / county boundaries", lon, lat);
-  const gauge = nearestGauge(lon, lat);
-  const civic = locality ? civicData[locality.NAME] : null;
 
   const reps = [
     cd && `Congressional District ${cd.DISTRICT}`,
@@ -865,13 +898,14 @@ async function riskLookup(lat, lon, label) {
   );
 
   // setPopupContent() alone doesn't re-run Leaflet's autoPan for the popup's
-  // new (much taller) size — it only ran once, against the tiny "Checking
-  // flood risk…" placeholder. Reopen so autoPan recalculates against the
-  // real content and the padding reserved for the title panel actually holds.
-  if (lookupMarker.isPopupOpen()) {
-    lookupMarker.closePopup();
-    lookupMarker.openPopup();
-  }
+  // real (much taller) size — on a fresh lookup it only ran once, against
+  // the tiny "Checking flood risk…" placeholder; on a cache hit the popup
+  // may be closed entirely (the user dismissed it since the last lookup at
+  // this spot). Unconditional close+open handles both: closePopup() on an
+  // already-closed popup is a harmless no-op, and openPopup() always
+  // recalculates autoPan against the real content just set above.
+  lookupMarker.closePopup();
+  lookupMarker.openPopup();
 }
 
 const addrStatus = () => document.getElementById("addr-status");
