@@ -1,0 +1,136 @@
+{
+  "Norfolk city": {
+    "recent_flood_actions": [
+      {
+        "title": "Ordinance Accepting Grant Funds for Hampton Boulevard Drainage Project",
+        "result": "passed",
+        "date": "SEPTEMBER 26, 2023"
+      },
+      {
+        "title": "Ordinance authorizing grant agreement with VA Resources Authority for The Grandy Village Living Shoreline Project.",
+        "result": "passed",
+        "date": "SEPTEMBER 24, 2024"
+      },
+      {
+        "title": "Ordinance authorizing grant agreement with VA Resources Authority for Steamboat Creek Living Shoreline Project.",
+        "result": "passed",
+        "date": "SEPTEMBER 24, 2024"
+      },
+      {
+        "title": "Ordinance authorizing grant agreement with VA Resources Authority for East Ocean View Community Center Shoreline Project.",
+        "result": "passed",
+        "date": "SEPTEMBER 24, 2024"
+      },
+      {
+        "title": "Ordinance Authorizing City Manager to Enter Right of Entry Agreement with U.S. Army Corps of Engineers for Flood Wall Project (Ordinance No. 50129).",
+        "result": "passed",
+        "date": "SEPTEMBER 23, 2025"
+      },
+      {
+        "title": "Ordinance Authorizing City Manager to Enter Right of Entry Agreement with USA for City Properties for Flood Wall Extension Project.",
+        "result": "passed",
+        "date": "OCTOBER 11, 2022"
+      },
+      {
+        "title": "Ordinance Accepting Conveyance of Drainage Easement over Property at 800 46th Street by ODU Real Estate Foundation.",
+        "result": "passed",
+        "date": "NOVEMBER 18, 2025"
+      },
+      {
+        "title": "An Ordinance Amending The FY2024 Annual Appropriations Ordinance to Accept and Appropriate Grant Funds for the Hampton Boulevard Drainage Project.",
+        "result": "passed",
+        "date": "NOVEMBER 14, 2023"
+      }
+    ],
+    "member_alignment": [
+      {
+        "member": "McGee",
+        "donor_sector": "Tech",
+        "sector_pct_of_funds": 33.3,
+        "sector_amount": 50550.0,
+        "signal_text": "McGee (Tech donors, 33% of funds): votes YES on infrastructure items 100% of the time vs 97% council average (+3pp, 90 votes). Adjacency only \u2014 not causal inference."
+      },
+      {
+        "member": "Smigiel",
+        "donor_sector": "Government",
+        "sector_pct_of_funds": 2.5,
+        "sector_amount": 1750.0,
+        "signal_text": "Smigiel (Government donors, 2% of funds): votes YES on infrastructure items 96% of the time vs 97% council average (-1pp, 229 votes). Adjacency only \u2014 not causal inference."
+      }
+    ]
+  },
+  "Virginia Beach city": {
+    "recent_flood_actions": [
+      {
+        "title": "CITY OF VIRGINIA BEACH \u2013 AN ORDINANCE TO AMEND SECTION 5.9 OF THE CITY CODE APPENDIX D, EROSION AND",
+        "result": "Vote Complete",
+        "date": "2026-06-16"
+      },
+      {
+        "title": "Ordinance To Amend the FY 2026-27 Capital Improvement Program for Stormwater",
+        "result": "Vote Complete",
+        "date": "2026-06-16"
+      },
+      {
+        "title": "Ordinance to Accept and Appropriate Funds for Costs Related to the Washington Flooding Deployment",
+        "result": "Vote Complete",
+        "date": "2026-04-21"
+      },
+      {
+        "title": "Ordinance to Amend the FY 2025-26 Capital Improvement Program for Flood Protection",
+        "result": "Vote Complete",
+        "date": "2025-12-09"
+      },
+      {
+        "title": "Resolution Approving the Modification of a Construction Contract for the Bow Creek Stormwater Park -",
+        "result": "Vote Complete",
+        "date": "2025-11-18"
+      },
+      {
+        "title": "Ordinance to authorize Temporary Encroachments into a variable width City-owned drainage and impound",
+        "result": "Vote Complete",
+        "date": "2025-06-03"
+      },
+      {
+        "title": "Ordinance to Accept and Appropriate $555,750 in Stormwater Local Assistance Fund Funding to Capital",
+        "result": "Vote Complete",
+        "date": "2025-03-18"
+      },
+      {
+        "title": "Ordinance to Authorize Temporary Encroachments into an 80\u2019 City-owned drainage and canal easement an",
+        "result": "Vote Complete",
+        "date": "2025-03-18"
+      }
+    ],
+    "member_alignment": [
+      {
+        "member": "Dyer",
+        "donor_sector": "Tech",
+        "sector_pct_of_funds": 3.6,
+        "sector_amount": 15000.0,
+        "signal_text": "Dyer (Tech donors, 4% of funds): votes YES on infrastructure items 100% of the time vs 99% council average (+1pp, 35 votes). Adjacency only \u2014 not causal inference."
+      },
+      {
+        "member": "Hutcheson",
+        "donor_sector": "Government",
+        "sector_pct_of_funds": 2.0,
+        "sector_amount": 4150.0,
+        "signal_text": "Hutcheson (Government donors, 2% of funds): votes YES on infrastructure items 100% of the time vs 99% council average (+1pp, 26 votes). Adjacency only \u2014 not causal inference."
+      },
+      {
+        "member": "Rouse",
+        "donor_sector": "Defense",
+        "sector_pct_of_funds": 1.6,
+        "sector_amount": 350.0,
+        "signal_text": "Rouse (Defense donors, 2% of funds): votes YES on infrastructure items 96% of the time vs 99% council average (-3pp, 25 votes). Adjacency only \u2014 not causal inference."
+      },
+      {
+        "member": "Wilson",
+        "donor_sector": "Tech",
+        "sector_pct_of_funds": 2.2,
+        "sector_amount": 8500.0,
+        "signal_text": "Wilson (Tech donors, 2% of funds): votes YES on infrastructure items 97% of the time vs 99% council average (-2pp, 32 votes). Adjacency only \u2014 not causal inference."
+      }
+    ]
+  }
+}

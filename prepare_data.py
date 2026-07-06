@@ -7,12 +7,18 @@ Outputs (all written to data/):
   house_districts.geojson          2024 House of Delegates districts in the region (Census TIGERweb)
   localities.geojson               Hampton Roads city/county boundaries (Census TIGERweb)
   stations.json                    NOAA tide gauges with flood thresholds converted to ft MLLW
+  civic_flood_watch.json           Norfolk/VB city council flood votes + donor-vote alignment
+                                   (read-only export from the VoteIQ repo's polls.db — this
+                                   script never writes to that database, and the running
+                                   flood-map server never opens it either; this file is the
+                                   only bridge between the two repos)
 
 Run:  python prepare_data.py
 """
 
 import gzip
 import json
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -23,11 +29,10 @@ from shapely.geometry import box
 
 BASE = Path(__file__).parent
 DATA = BASE / "data"
+VOTEIQ_REPO = Path(r"C:\Users\Alexis\OneDrive\Desktop\Vriginia_api_election")
 
-CD_SHAPEFILE = Path(
-    r"C:\Users\Alexis\OneDrive\Desktop\Vriginia_api_election"
-    r"\SCV Final 2021 Redistricting Plans\SCV FINAL CD.shp"
-)
+CD_SHAPEFILE = VOTEIQ_REPO / "SCV Final 2021 Redistricting Plans" / "SCV FINAL CD.shp"
+POLLS_DB = VOTEIQ_REPO / "polls.db"
 
 # lon/lat bounding box covering the Hampton Roads planning district
 BBOX = (-77.6, 36.50, -75.55, 37.70)
@@ -179,12 +184,118 @@ def build_stations() -> None:
     print(f"  wrote {out.name}")
 
 
+# Keyword filter for flood/stormwater-relevant council agenda items. Matched
+# against free-text ordinance/resolution titles, so it's necessarily a blunt
+# instrument — a false positive here just means an irrelevant item shows up,
+# never a wrong number or fabricated vote (the underlying query still returns
+# the real recorded title/date/result).
+FLOOD_KEYWORDS = (
+    "flood", "storm water", "stormwater", "drainage", "coastal storm",
+    "resilien", "seawall", "sea wall", "bulkhead", "wetland", "shoreline",
+    "levee", "dune", "erosion", "sea level",
+)
+
+# (locality name matching localities.geojson NAME, per-city table names)
+CIVIC_CITIES = [
+    ("Norfolk city", {
+        "actions_table": "norfolk_council_votes",
+        "actions_id": "agenda_item",
+        "adjacency_table": "norfolk_donor_vote_adjacency",
+    }),
+    ("Virginia Beach city", {
+        "actions_table": "vb_council_member_votes",  # no distinct per-action table; dedupe below
+        "actions_id": "resolution_id",
+        "adjacency_table": "vb_donor_vote_adjacency",
+    }),
+]
+
+
+def _flood_keyword_where(column: str) -> str:
+    clauses = " OR ".join(f"{column} LIKE '%{kw}%'" for kw in FLOOD_KEYWORDS)
+    return f"({clauses})"
+
+
+def build_civic_flood_watch() -> None:
+    """Export Norfolk/VB city council flood-relevant votes + donor-vote
+    alignment from the VoteIQ repo's polls.db. Read-only connection — this
+    script only ever SELECTs, never writes to that database. Output is a
+    static JSON file committed to this repo; the deployed flood-map server
+    never opens polls.db itself, so there is no runtime coupling between
+    the two services or their databases."""
+    print("civic flood watch (Norfolk/VB council data from VoteIQ's polls.db)...")
+    if not POLLS_DB.exists():
+        print(f"  skipped: {POLLS_DB} not found (VoteIQ repo not present on this machine)")
+        return
+
+    con = sqlite3.connect(f"file:{POLLS_DB}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    result = {}
+    try:
+        for locality_name, cfg in CIVIC_CITIES:
+            cur = con.cursor()
+
+            # Distinct recent flood/stormwater-relevant actions.
+            where = _flood_keyword_where("title")
+            cur.execute(
+                f"SELECT DISTINCT {cfg['actions_id']} AS action_id, title, result, "
+                f"meeting_date FROM {cfg['actions_table']} WHERE {where} "
+                f"AND meeting_date IS NOT NULL ORDER BY meeting_date DESC LIMIT 8"
+            )
+            actions = [
+                {"title": r["title"], "result": r["result"], "date": r["meeting_date"]}
+                for r in cur.fetchall()
+            ]
+
+            # Per-member donor-vote alignment specifically on infrastructure
+            # spending votes — the closest available topic to flood/stormwater
+            # capital projects (the underlying data has no flood-specific
+            # topic tag). This is adjacency, not causation: it states what
+            # fraction of a member's YES votes on infrastructure items lines
+            # up with how much of their campaign funding came from a given
+            # donor sector. Said explicitly in signal_text below, matching
+            # the disclaimer already used on VoteIQ's own donor-alignment
+            # tables elsewhere.
+            cur.execute(
+                f"SELECT member_name, sector, sector_pct, sector_amt, "
+                f"member_yes_pct, council_yes_pct, delta_pp, topic_vote_count "
+                f"FROM {cfg['adjacency_table']} WHERE topic='infrastructure' "
+                f"ORDER BY member_name"
+            )
+            members = []
+            for r in cur.fetchall():
+                sign = "+" if r["delta_pp"] >= 0 else ""
+                signal_text = (
+                    f"{r['member_name']} ({r['sector']} donors, {r['sector_pct']:.0f}% of funds): "
+                    f"votes YES on infrastructure items {r['member_yes_pct']:.0f}% of the time "
+                    f"vs {r['council_yes_pct']:.0f}% council average ({sign}{r['delta_pp']:.0f}pp, "
+                    f"{r['topic_vote_count']} votes). Adjacency only — not causal inference."
+                )
+                members.append({
+                    "member": r["member_name"],
+                    "donor_sector": r["sector"],
+                    "sector_pct_of_funds": r["sector_pct"],
+                    "sector_amount": r["sector_amt"],
+                    "signal_text": signal_text,
+                })
+
+            result[locality_name] = {"recent_flood_actions": actions, "member_alignment": members}
+            print(f"  {locality_name}: {len(actions)} flood-related actions, "
+                  f"{len(members)} members with infrastructure alignment data")
+    finally:
+        con.close()
+
+    out = DATA / "civic_flood_watch.json"
+    out.write_text(json.dumps(result, indent=2))
+    print(f"  wrote {out.name}")
+
+
 def main() -> None:
     DATA.mkdir(exist_ok=True)
     build_congressional_districts()
     build_legislative_districts()
     build_localities()
     build_stations()
+    build_civic_flood_watch()
     print("done")
 
 

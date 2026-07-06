@@ -124,6 +124,13 @@
     color: #fff; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
   .popup-alert { color: #b30000; font-weight: 600; }
 
+  .risk-popup .civic-panel { margin-top: 4px; }
+  .risk-popup .civic-panel summary { cursor: pointer; font-weight: 700; }
+  .risk-popup .civic-action { font-size: 11.5px; margin: 4px 0; padding-left: 2px; }
+  .risk-popup .civic-action .civic-date { color: #666; }
+  .risk-popup .civic-signal { font-size: 11px; color: #444; margin: 3px 0; font-style: italic; }
+  .risk-popup .civic-note { font-size: 11px; color: #666; }
+
   .legend { line-height: 1.5; font-size: 12px; }
   .legend .swatch {
     display: inline-block; width: 14px; height: 14px;
@@ -433,6 +440,15 @@ dataReadyPromises.push(fetch("data/stations.json")
   })
   .catch((err) => console.error("failed to load stations.json:", err)));
 
+// City council flood-vote data, only available for the cities VoteIQ has
+// scraped council records for (Norfolk, Virginia Beach) — a static export,
+// never a live query, so there's no runtime coupling to VoteIQ at all.
+let civicData = {};
+dataReadyPromises.push(fetch("data/civic_flood_watch.json")
+  .then((r) => r.json())
+  .then((data) => { civicData = data; })
+  .catch((err) => console.error("failed to load civic_flood_watch.json:", err)));
+
 const dataReady = Promise.all(dataReadyPromises);
 
 // ----------------------------------------------------- NWS flood alerts
@@ -727,12 +743,31 @@ async function riskLookup(lat, lon, label) {
   const house = findDistrict("House of Delegates districts (2024)", lon, lat);
   const locality = findDistrict("City / county boundaries", lon, lat);
   const gauge = nearestGauge(lon, lat);
+  const civic = locality ? civicData[locality.NAME] : null;
 
   const reps = [
     cd && `Congressional District ${cd.DISTRICT}`,
     senate && senate.NAME,
     house && house.NAME,
   ].filter(Boolean);
+
+  let civicHtml = "";
+  if (civic && (civic.recent_flood_actions.length || civic.member_alignment.length)) {
+    const actionsHtml = civic.recent_flood_actions.slice(0, 4).map((a) =>
+      `<div class="civic-action">${a.title}<br>` +
+      `<span class="civic-date">${a.date} &middot; ${a.result}</span></div>`
+    ).join("");
+    const signalsHtml = civic.member_alignment.slice(0, 2).map((m) =>
+      `<div class="civic-signal">${m.signal_text}</div>`
+    ).join("");
+    civicHtml = `<details class="civic-panel">
+       <summary>City Council Flood Watch (${locality.NAME.replace(" city", "")})</summary>
+       ${actionsHtml || "<div class='civic-note'>No recent flood/stormwater actions found.</div>"}
+       ${signalsHtml}
+       <div class="civic-note">Citywide council data, not specific to a single district or
+       address. Donor-vote figures show adjacency only, not causation.</div>
+     </details>`;
+  }
 
   lastLookup = {
     address: label || null,
@@ -753,6 +788,7 @@ async function riskLookup(lat, lon, label) {
           flood_thresholds_ft_mllw: gauge.st.thresholds_mllw,
           next_high_tide: nextHighTideInfo(gauge.st.id, gauge.st.thresholds_mllw) }
       : null,
+    city_council_flood_watch: civic || null,
   };
 
   // Make this exact lookup shareable: encode lat/lon (exact replay, no
@@ -774,6 +810,7 @@ async function riskLookup(lat, lon, label) {
        ${elevLine}${claimsLine}
        <b>Represented by:</b>
        ${reps.length ? `<ul>${reps.map((r) => `<li>${r}</li>`).join("")}</ul>` : " outside loaded district data<br>"}
+       ${civicHtml}
        ${gauge ? `<b>Nearest tide gauge:</b> ${gauge.st.name} (${gauge.miles.toFixed(1)} mi)<br>` : ""}
        ${lastLookup.nearest_tide_gauge && lastLookup.nearest_tide_gauge.next_high_tide
          ? (t => `<b>Next high tide:</b> ${t.heightFt.toFixed(1)} ft at ${t.timeLabel}` +
