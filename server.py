@@ -41,6 +41,14 @@ TRACK_IP_LIMIT = int(os.environ.get("TRACK_IP_LIMIT", "60"))
 TRACK_IP_WINDOW_SECONDS = int(os.environ.get("TRACK_IP_WINDOW_SECONDS", "600"))
 STATS_KEY = os.environ.get("STATS_KEY")
 
+# Feedback: "report an issue with this data" from the lookup popup. Shares
+# the analytics DB file (one less file to manage) but its own table, rate
+# limit, and message-length cap — free text from the public needs a tighter
+# leash than a fixed-vocabulary event name.
+FEEDBACK_IP_LIMIT = int(os.environ.get("FEEDBACK_IP_LIMIT", "5"))
+FEEDBACK_IP_WINDOW_SECONDS = int(os.environ.get("FEEDBACK_IP_WINDOW_SECONDS", "600"))
+FEEDBACK_MESSAGE_MAX = 2000
+
 SYSTEM_PROMPT = """\
 You write plain-English flood risk reports for properties in Hampton Roads, Virginia.
 
@@ -154,6 +162,14 @@ def _init_analytics_db() -> None:
             " referrer TEXT"
             ")"
         )
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS feedback ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " ts TEXT DEFAULT CURRENT_TIMESTAMP,"
+            " message TEXT NOT NULL,"
+            " lookup_json TEXT"
+            ")"
+        )
         con.commit()
     finally:
         con.close()
@@ -171,6 +187,18 @@ def _record_event(event: str, path: str | None, referrer: str | None) -> None:
         con.execute(
             "INSERT INTO events (event, path, referrer) VALUES (?, ?, ?)",
             (event, (path or "")[:300], (referrer or "")[:300]),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _record_feedback(message: str, lookup: dict | None) -> None:
+    con = sqlite3.connect(ANALYTICS_DB)
+    try:
+        con.execute(
+            "INSERT INTO feedback (message, lookup_json) VALUES (?, ?)",
+            (message[:FEEDBACK_MESSAGE_MAX], json.dumps(lookup) if lookup else None),
         )
         con.commit()
     finally:
@@ -197,6 +225,11 @@ class TrackRequest(BaseModel):
     event: str
     path: str | None = None
     referrer: str | None = None
+
+
+class FeedbackRequest(BaseModel):
+    message: str
+    lookup: dict | None = None
 
 
 @app.post("/api/track", status_code=204)
@@ -231,6 +264,47 @@ def stats(key: str | None = None) -> dict:
             "all_time": counts(),
             "last_24h": counts("ts >= datetime('now', '-1 day')"),
             "last_7d": counts("ts >= datetime('now', '-7 day')"),
+        }
+    finally:
+        con.close()
+
+
+@app.post("/api/feedback", status_code=204)
+def submit_feedback(req: FeedbackRequest, request: Request) -> None:
+    message = req.message.strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+    if len(message) > FEEDBACK_MESSAGE_MAX:
+        raise HTTPException(400, f"message is limited to {FEEDBACK_MESSAGE_MAX} characters")
+    _check_ip_rate_limit(
+        _client_ip(request), "feedback", FEEDBACK_IP_LIMIT, FEEDBACK_IP_WINDOW_SECONDS,
+        "Too many feedback submissions from this address.",
+    )
+    _record_feedback(message, req.lookup)
+
+
+@app.get("/api/feedback")
+def list_feedback(key: str | None = None) -> dict:
+    """Raw submitted feedback (free text + the lookup context attached at
+    submit time). Same hidden-unless-STATS_KEY-is-set posture as /api/stats —
+    this is an admin view, not a public one."""
+    if not STATS_KEY:
+        raise HTTPException(404)
+    if key != STATS_KEY:
+        raise HTTPException(403, "bad key")
+
+    con = sqlite3.connect(ANALYTICS_DB)
+    try:
+        rows = con.execute(
+            "SELECT ts, message, lookup_json FROM feedback ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+        return {
+            "count": len(rows),
+            "feedback": [
+                {"ts": ts, "message": message,
+                 "lookup": json.loads(lookup_json) if lookup_json else None}
+                for ts, message, lookup_json in rows
+            ],
         }
     finally:
         con.close()

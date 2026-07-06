@@ -115,6 +115,21 @@
   }
   .ai-btn:hover { background: #073763; }
 
+  #feedback-area { margin-top: 6px; font-size: 11px; }
+  .feedback-link { color: #666; cursor: pointer; text-decoration: underline; }
+  .feedback-form textarea {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 11.5px;
+    padding: 4px; border: 1px solid #bbb; border-radius: 4px; resize: vertical;
+  }
+  .feedback-form .feedback-actions { margin-top: 3px; }
+  .feedback-form button {
+    font-size: 11px; padding: 3px 9px; border: none; border-radius: 4px;
+    background: #0b5394; color: #fff; cursor: pointer; margin-right: 6px;
+  }
+  .feedback-form button:hover { background: #073763; }
+  .feedback-form a { font-size: 11px; color: #666; cursor: pointer; }
+  .feedback-error { color: #b30000; }
+
   #report-panel {
     position: absolute; top: 10px; right: 10px; z-index: 1100;
     width: 340px; max-height: calc(100% - 40px); overflow-y: auto;
@@ -894,6 +909,9 @@ async function riskLookup(lat, lon, label) {
        <button class="ai-btn" onclick="generateReport()">Generate AI report</button>
        <small>Drag the pin or right-click the map to check another spot.
        Screening info only — not a flood insurance determination.</small>
+       <div id="feedback-area">
+         <a class="feedback-link" onclick="showFeedbackForm()">Report an issue with this data</a>
+       </div>
      </div>`
   );
 
@@ -948,6 +966,51 @@ async function searchAddress() {
 }
 
 map.on("contextmenu", (e) => riskLookup(e.latlng.lat, e.latlng.lng, null));
+
+// -------------------------------------------------------------- feedback
+function showFeedbackForm() {
+  const area = document.getElementById("feedback-area");
+  if (!area) return;
+  area.innerHTML =
+    `<div class="feedback-form">
+       <textarea id="feedback-msg" rows="2" maxlength="2000"
+         placeholder="What looks wrong? (e.g. wrong flood zone, address in wrong spot)"></textarea>
+       <div class="feedback-actions">
+         <button onclick="submitFeedback()">Send</button>
+         <a onclick="cancelFeedback()">Cancel</a>
+       </div>
+     </div>`;
+  document.getElementById("feedback-msg").focus();
+}
+
+function cancelFeedback() {
+  const area = document.getElementById("feedback-area");
+  if (!area) return;
+  area.innerHTML = `<a class="feedback-link" onclick="showFeedbackForm()">Report an issue with this data</a>`;
+}
+
+async function submitFeedback() {
+  const textarea = document.getElementById("feedback-msg");
+  const message = textarea.value.trim();
+  const area = document.getElementById("feedback-area");
+  if (!message) { textarea.focus(); return; }
+  try {
+    const resp = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, lookup: lastLookup }),
+    });
+    if (!resp.ok) {
+      const detail = (await resp.json().catch(() => ({}))).detail || resp.statusText;
+      throw new Error(detail);
+    }
+    area.innerHTML = `<span class="feedback-link" style="text-decoration:none">Thanks — noted.</span>`;
+  } catch (err) {
+    area.querySelector(".feedback-form").insertAdjacentHTML(
+      "beforeend", `<div class="feedback-error">${err.message}</div>`
+    );
+  }
+}
 
 // ------------------------------------------------------------ AI report
 // Minimal markdown rendering: escape everything, then ## headings and **bold**.

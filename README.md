@@ -52,6 +52,20 @@ entirely) unless the `STATS_KEY` env var is set. Set it in Render, then
 visit `https://www.floodwatchiq.com/api/stats?key=<that value>` to see
 `all_time` / `last_24h` / `last_7d` counts per event.
 
+## Feedback
+
+Every lookup popup has a **Report an issue with this data** link. It
+opens an inline form (no page navigation), and submits to `POST
+/api/feedback` along with the full `lastLookup` context — zone, SLR
+result, elevation, claims, districts, tide forecast, civic data — so a
+report is actionable ("wrong zone at this address") instead of vague.
+Same SQLite file as analytics, its own `feedback` table, rate-limited
+separately (`FEEDBACK_IP_LIMIT`, default 5/10min — tighter than
+tracking, since this is free text from the public).
+
+Submitted feedback is visible at `GET /api/feedback?key=...`, gated by
+the same `STATS_KEY` as `/api/stats`.
+
 ## Run it
 
 ```
