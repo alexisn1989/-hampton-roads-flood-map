@@ -353,6 +353,15 @@ const localities = districtLayer(
   "City / county boundaries"
 );
 localities.addTo(map);
+// Member-name resolution happens in the property lookup, not this static
+// popup — civicData may not have loaded yet when this feature's popup
+// content is built, right after the GeoJSON fetch resolves.
+districtLayer(
+  "data/vb_council_districts.geojson",
+  { color: "#2ca25f", weight: 1.8, fillOpacity: 0.03 },
+  (p) => `<b>VB Council District ${p.District}</b>`,
+  "VB Council districts"
+);
 
 // --------------------------------------------------------- NOAA tide gauges
 const STATUS_COLORS = {
@@ -797,9 +806,29 @@ async function computeLookupData(lat, lon) {
   const gauge = nearestGauge(lon, lat);
   const civic = locality ? civicData[locality.NAME] : null;
 
+  // Virginia Beach only: resolve the exact council district at this point to
+  // a named member, using the city's own numbered-district boundary layer.
+  // Norfolk's civic panel stays citywide — no ward boundary layer sourced.
+  let vbCouncilMember = null;
+  if (locality && locality.NAME === "Virginia Beach city" && civic && civic.council_members) {
+    const districtFeature = findDistrict("VB Council districts", lon, lat);
+    const member = districtFeature
+      ? civic.council_members.find((m) => m.district_num === districtFeature.District)
+      : null;
+    if (member) {
+      // member_alignment entries are keyed by last name only (e.g. "Dyer") —
+      // match as a whole word against the member's full name to attach their
+      // donor-alignment line, if the underlying data happens to cover them.
+      const alignment = civic.member_alignment.find((a) =>
+        new RegExp(`\\b${a.member}\\b`, "i").test(member.name)
+      );
+      vbCouncilMember = { name: member.name, district: member.district_num, alignment: alignment || null };
+    }
+  }
+
   return {
     femaRes, slrRes, femaZone, slr, elevation, claims, pointAlerts,
-    cd, senate, house, locality, gauge, civic,
+    cd, senate, house, locality, gauge, civic, vbCouncilMember,
   };
 }
 
@@ -835,7 +864,7 @@ async function riskLookup(lat, lon, label) {
   if (!isFreshHit) lookupCache.set(cacheKey, { ts: Date.now(), data });
 
   const { femaRes, slrRes, femaZone, slr, elevation, claims, pointAlerts,
-          cd, senate, house, locality, gauge, civic } = data;
+          cd, senate, house, locality, gauge, civic, vbCouncilMember } = data;
 
   let alertLine = "";
   if (pointAlerts && pointAlerts.length) {
@@ -876,16 +905,32 @@ async function riskLookup(lat, lon, label) {
       `<div class="civic-action">${a.title}<br>` +
       `<span class="civic-date">${a.date} &middot; ${a.result}</span></div>`
     ).join("");
-    const signalsHtml = civic.member_alignment.slice(0, 2).map((m) =>
-      `<div class="civic-signal">${m.signal_text}</div>`
-    ).join("");
     const asOf = civic.donor_data_as_of ? civic.donor_data_as_of.slice(0, 10) : null;
+
+    // Virginia Beach with a resolved district shows the specific member;
+    // otherwise (Norfolk, or a VB point outside any district polygon) falls
+    // back to the citywide member list, same as before this feature.
+    let memberHtml, scopeNote;
+    if (vbCouncilMember) {
+      const districtLabel = vbCouncilMember.district === 0
+        ? "at-large (Mayor)" : `District ${vbCouncilMember.district}`;
+      memberHtml = `<div class="civic-signal"><b>Your council member:</b> ${vbCouncilMember.name} (${districtLabel})` +
+        (vbCouncilMember.alignment ? `<br>${vbCouncilMember.alignment.signal_text}` : "") + `</div>`;
+      scopeNote = "Council actions are citywide. Donor-vote figures show adjacency " +
+        `only, not causation${asOf ? ` (as of ${asOf})` : ""}.`;
+    } else {
+      memberHtml = civic.member_alignment.slice(0, 2).map((m) =>
+        `<div class="civic-signal">${m.signal_text}</div>`
+      ).join("");
+      scopeNote = "Citywide council data, not specific to a single district or address. " +
+        `Donor-vote figures show adjacency only, not causation${asOf ? ` (as of ${asOf})` : ""}.`;
+    }
+
     civicHtml = `<details class="civic-panel">
        <summary>City Council Flood Watch (${locality.NAME.replace(" city", "")})</summary>
+       ${memberHtml}
        ${actionsHtml || "<div class='civic-note'>No recent flood/stormwater actions found.</div>"}
-       ${signalsHtml}
-       <div class="civic-note">Citywide council data, not specific to a single district or
-       address. Donor-vote figures show adjacency only, not causation${asOf ? ` (as of ${asOf})` : ""}.</div>
+       <div class="civic-note">${scopeNote}</div>
      </details>`;
   }
 
@@ -908,7 +953,9 @@ async function riskLookup(lat, lon, label) {
           flood_thresholds_ft_mllw: gauge.st.thresholds_mllw,
           next_high_tide: nextHighTideInfo(gauge.st.id, gauge.st.thresholds_mllw) }
       : null,
-    city_council_flood_watch: civic || null,
+    city_council_flood_watch: civic
+      ? { ...civic, your_council_member: vbCouncilMember || null }
+      : null,
   };
   track("lookup");
 

@@ -12,6 +12,9 @@ Outputs (all written to data/):
                                    script never writes to that database, and the running
                                    flood-map server never opens it either; this file is the
                                    only bridge between the two repos)
+  vb_council_districts.geojson     Virginia Beach's 10 numbered council districts
+                                   (city GIS, gismaps.vbgov.com) — lets the property lookup
+                                   name a specific council member, not just "citywide"
 
 Run:  python prepare_data.py
 """
@@ -42,6 +45,9 @@ SIMPLIFY_DEG = 0.0002
 TIGER_LEGISLATIVE = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Legislative/MapServer"
 TIGER_COUNTY = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer"
 MDAPI = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations"
+VB_COUNCIL_DISTRICTS_LAYER = (
+    "https://geo.vbgov.com/mapservices/rest/services/Basemaps/Voting_Information/MapServer/2"
+)
 
 # The 16 Hampton Roads (HRPDC) localities, as state+county FIPS GEOIDs
 LOCALITY_GEOIDS = [
@@ -150,6 +156,17 @@ def build_localities() -> None:
     save_geojson(gdf, "localities.geojson")
 
 
+def build_vb_council_districts() -> None:
+    print("Virginia Beach council districts (city GIS)...")
+    params = {"where": "1=1", "outFields": "District", "outSR": "4326", "f": "geojson"}
+    data = fetch_json(f"{VB_COUNCIL_DISTRICTS_LAYER}/query", params)
+    feats = data.get("features", [])
+    if not feats:
+        raise RuntimeError("no features from VB council districts layer")
+    gdf = gpd.GeoDataFrame.from_features(feats, crs="EPSG:4326")[["District", "geometry"]]
+    save_geojson(gdf, "vb_council_districts.geojson")
+
+
 def build_stations() -> None:
     print("NOAA tide stations...")
     stations = []
@@ -196,16 +213,22 @@ FLOOD_KEYWORDS = (
 )
 
 # (locality name matching localities.geojson NAME, per-city table names)
+# members_table is optional — only Virginia Beach has both a numbered-district
+# roster AND a matching district-boundary layer, so only VB gets a
+# member-per-district roster in the export; Norfolk's civic panel stays
+# citywide (wards/superwards, no boundary layer sourced yet).
 CIVIC_CITIES = [
     ("Norfolk city", {
         "actions_table": "norfolk_council_votes",
         "actions_id": "agenda_item",
         "adjacency_table": "norfolk_donor_vote_adjacency",
+        "members_table": None,
     }),
     ("Virginia Beach city", {
         "actions_table": "vb_council_member_votes",  # no distinct per-action table; dedupe below
         "actions_id": "resolution_id",
         "adjacency_table": "vb_donor_vote_adjacency",
+        "members_table": "vb_council_members",
     }),
 ]
 
@@ -283,10 +306,22 @@ def build_civic_flood_watch() -> None:
             cur.execute(f"SELECT MAX(updated_at) FROM {cfg['adjacency_table']}")
             donor_data_as_of = cur.fetchone()[0]
 
+            # Numbered-district roster (currently Virginia Beach only) — lets
+            # the frontend map a resolved district boundary straight to a
+            # named council member instead of just showing everyone.
+            council_members = None
+            if cfg["members_table"]:
+                cur.execute(f"SELECT name, district_num FROM {cfg['members_table']}")
+                council_members = [
+                    {"name": r["name"], "district_num": r["district_num"]}
+                    for r in cur.fetchall()
+                ]
+
             result[locality_name] = {
                 "recent_flood_actions": actions,
                 "member_alignment": members,
                 "donor_data_as_of": donor_data_as_of,
+                "council_members": council_members,
             }
             print(f"  {locality_name}: {len(actions)} flood-related actions, "
                   f"{len(members)} members with infrastructure alignment data "
@@ -308,6 +343,7 @@ def main() -> None:
     build_congressional_districts()
     build_legislative_districts()
     build_localities()
+    build_vb_council_districts()
     build_stations()
     build_civic_flood_watch()
     print("done")

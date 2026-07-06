@@ -12,6 +12,7 @@ layered with the political districts that represent the exposed areas.
 | Congressional districts | 2021 SCV Final CD shapefile (Virginia Supreme Court special masters plan) | |
 | State Senate / House of Delegates districts | Census TIGERweb, 2024 vintage | |
 | City & county boundaries | Census TIGERweb | The 16 HRPDC localities |
+| VB Council districts | Virginia Beach GIS (`geo.vbgov.com`) | The city's 10 numbered council districts — lets the lookup name a specific council member. Norfolk has no equivalent boundary layer sourced, so its civic panel stays citywide. |
 | Live tide gauges | NOAA CO-OPS API | Sewells Point, Money Point, Chesapeake Bay Bridge Tunnel, Yorktown, Kiptopeke. Auto-refreshes every 6 minutes. |
 
 Gauge markers are colored by the latest observation against NWS flood
@@ -27,6 +28,16 @@ nearest tide gauge. Geocoding is OpenStreetMap Nominatim (the Census
 geocoder doesn't send CORS headers); zone and SLR values are queried live
 from FEMA NFHL and NOAA at the clicked point. Screening info only — not a
 flood insurance determination.
+
+For Norfolk and Virginia Beach, the popup also shows a **City Council Flood
+Watch** panel: real recent council actions on flooding/stormwater, plus
+donor-vote alignment data (adjacency only, never framed as causation) —
+exported once from VoteIQ's `polls.db` into `data/civic_flood_watch.json`
+(see `prepare_data.py`), so the running server has no live dependency on
+that database. In Virginia Beach specifically, the lookup resolves the
+point against the city's own council-district boundaries and names the
+actual representative for that address; Norfolk's panel stays citywide
+(no ward boundary layer sourced yet).
 
 ## AI property report
 

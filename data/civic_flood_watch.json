@@ -58,7 +58,8 @@
         "signal_text": "Smigiel (Government donors, 2% of funds): votes YES on infrastructure items 96% of the time vs 97% council average (-1pp, 229 votes). Adjacency only \u2014 not causal inference."
       }
     ],
-    "donor_data_as_of": "2026-06-24T17:38:38.374687+00:00"
+    "donor_data_as_of": "2026-06-24T17:38:38.374687+00:00",
+    "council_members": null
   },
   "Virginia Beach city": {
     "recent_flood_actions": [
@@ -133,7 +134,53 @@
         "signal_text": "Wilson (Tech donors, 2% of funds): votes YES on infrastructure items 97% of the time vs 99% council average (-2pp, 32 votes). Adjacency only \u2014 not causal inference."
       }
     ],
-    "donor_data_as_of": "2026-06-23T18:48:39.802287+00:00"
+    "donor_data_as_of": "2026-06-23T18:48:39.802287+00:00",
+    "council_members": [
+      {
+        "name": "Robert M. \"Bobby\" Dyer",
+        "district_num": 0
+      },
+      {
+        "name": "Michael Berlucchi",
+        "district_num": 3
+      },
+      {
+        "name": "Stacy Cummings",
+        "district_num": 8
+      },
+      {
+        "name": "Barbara Henley",
+        "district_num": 2
+      },
+      {
+        "name": "David Hutcheson",
+        "district_num": 1
+      },
+      {
+        "name": "Cal \"Cash\" Jackson-Green",
+        "district_num": 7
+      },
+      {
+        "name": "Robert W. \"Worth\" Remick",
+        "district_num": 6
+      },
+      {
+        "name": "Dr. Amelia Ross-Hammond",
+        "district_num": 4
+      },
+      {
+        "name": "Jennifer V. Rouse",
+        "district_num": 10
+      },
+      {
+        "name": "Joashua F. Schulman",
+        "district_num": 9
+      },
+      {
+        "name": "Rosemary Wilson",
+        "district_num": 5
+      }
+    ]
   },
   "_meta": {
     "generated_at": "2026-07-06"
