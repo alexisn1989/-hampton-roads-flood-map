@@ -278,11 +278,25 @@ def build_civic_flood_watch() -> None:
                     "signal_text": signal_text,
                 })
 
-            result[locality_name] = {"recent_flood_actions": actions, "member_alignment": members}
+            # Real freshness date for this city's donor-alignment figures,
+            # straight from the source table's own updated_at — not a guess.
+            cur.execute(f"SELECT MAX(updated_at) FROM {cfg['adjacency_table']}")
+            donor_data_as_of = cur.fetchone()[0]
+
+            result[locality_name] = {
+                "recent_flood_actions": actions,
+                "member_alignment": members,
+                "donor_data_as_of": donor_data_as_of,
+            }
             print(f"  {locality_name}: {len(actions)} flood-related actions, "
-                  f"{len(members)} members with infrastructure alignment data")
+                  f"{len(members)} members with infrastructure alignment data "
+                  f"(as of {donor_data_as_of})")
     finally:
         con.close()
+
+    # Sibling key, not a locality — the frontend looks up civicData[NAME],
+    # so this is simply never matched by a real lookup and safely ignored.
+    result["_meta"] = {"generated_at": time.strftime("%Y-%m-%d", time.gmtime())}
 
     out = DATA / "civic_flood_watch.json"
     out.write_text(json.dumps(result, indent=2))

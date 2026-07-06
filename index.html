@@ -167,6 +167,11 @@
     display: inline-block; width: 12px; height: 12px; border-radius: 50%;
     margin-right: 6px; vertical-align: -1px; border: 1.5px solid #333;
   }
+  .data-sources { margin-top: 6px; max-width: 260px; }
+  .data-sources summary { cursor: pointer; font-weight: 700; }
+  .data-sources table { font-size: 10.5px; color: #444; margin-top: 3px; border-collapse: collapse; }
+  .data-sources td { padding: 1px 6px 1px 0; vertical-align: top; }
+  .data-sources td:first-child { font-weight: 600; white-space: nowrap; }
 
   .station-popup table { border-collapse: collapse; font-size: 12px; }
   .station-popup td { padding: 1px 8px 1px 0; }
@@ -795,12 +800,13 @@ async function riskLookup(lat, lon, label) {
     const signalsHtml = civic.member_alignment.slice(0, 2).map((m) =>
       `<div class="civic-signal">${m.signal_text}</div>`
     ).join("");
+    const asOf = civic.donor_data_as_of ? civic.donor_data_as_of.slice(0, 10) : null;
     civicHtml = `<details class="civic-panel">
        <summary>City Council Flood Watch (${locality.NAME.replace(" city", "")})</summary>
        ${actionsHtml || "<div class='civic-note'>No recent flood/stormwater actions found.</div>"}
        ${signalsHtml}
        <div class="civic-note">Citywide council data, not specific to a single district or
-       address. Donor-vote figures show adjacency only, not causation.</div>
+       address. Donor-vote figures show adjacency only, not causation${asOf ? ` (as of ${asOf})` : ""}.</div>
      </details>`;
   }
 
@@ -1060,10 +1066,36 @@ legend.onAdd = () => {
      <span class="dot" style="background:#fee08b"></span>Near flood<br>
      <span class="dot" style="background:#fc8d59"></span>Minor
      <span class="dot" style="background:#d7301f"></span>Moderate
-     <span class="dot" style="background:#7a0177"></span>Major`;
+     <span class="dot" style="background:#7a0177"></span>Major
+     <details class="data-sources">
+       <summary>Data sources &amp; vintage</summary>
+       <table>
+         <tr><td>Sea level rise</td><td>NOAA OCM, live scenario tiles</td></tr>
+         <tr><td>FEMA flood zones</td><td>FEMA NFHL, live</td></tr>
+         <tr><td>Congressional districts</td><td>2021 SCV Final plan (VA Supreme Court)</td></tr>
+         <tr><td>Senate / House districts</td><td>Census TIGERweb, 2024</td></tr>
+         <tr><td>City &amp; county boundaries</td><td>Census TIGERweb</td></tr>
+         <tr><td>Tide gauges &amp; forecasts</td><td>NOAA CO-OPS, live</td></tr>
+         <tr><td>NWS flood alerts</td><td>National Weather Service, live</td></tr>
+         <tr><td>Ground elevation</td><td>USGS 3DEP, live</td></tr>
+         <tr><td>NFIP claims</td><td>OpenFEMA, live</td></tr>
+         <tr><td>City Council Flood Watch</td><td id="civic-vintage">loading&hellip;</td></tr>
+       </table>
+     </details>`;
   return div;
 };
 legend.addTo(map);
+dataReady.then(() => {
+  const cell = document.getElementById("civic-vintage");
+  if (!cell) return;
+  const dates = Object.values(civicData)
+    .map((c) => c && c.donor_data_as_of)
+    .filter(Boolean)
+    .map((d) => d.slice(0, 10));
+  cell.textContent = dates.length
+    ? `VoteIQ (Norfolk/VB only), donor data as of ${dates.sort().at(-1)}`
+    : "VoteIQ (Norfolk/VB only)";
+});
 </script>
 </body>
 </html>

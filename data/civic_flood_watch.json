@@ -57,7 +57,8 @@
         "sector_amount": 1750.0,
         "signal_text": "Smigiel (Government donors, 2% of funds): votes YES on infrastructure items 96% of the time vs 97% council average (-1pp, 229 votes). Adjacency only \u2014 not causal inference."
       }
-    ]
+    ],
+    "donor_data_as_of": "2026-06-24T17:38:38.374687+00:00"
   },
   "Virginia Beach city": {
     "recent_flood_actions": [
@@ -131,6 +132,10 @@
         "sector_amount": 8500.0,
         "signal_text": "Wilson (Tech donors, 2% of funds): votes YES on infrastructure items 97% of the time vs 99% council average (-2pp, 32 votes). Adjacency only \u2014 not causal inference."
       }
-    ]
+    ],
+    "donor_data_as_of": "2026-06-23T18:48:39.802287+00:00"
+  },
+  "_meta": {
+    "generated_at": "2026-07-06"
   }
 }
