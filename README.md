@@ -39,6 +39,19 @@ numbers. Reports are cached in memory by payload hash. Model defaults to
 `claude-haiku-4-5` (fractions of a cent per report); override with the
 `FLOOD_MODEL` env var.
 
+## Analytics
+
+Three events — `pageview`, `lookup`, `ai_report` — are logged to a local
+SQLite file (`analytics.db`, gitignored) via `POST /api/track`. No cookies,
+no IP addresses, no per-visitor identifiers of any kind; just aggregate
+counts. Rate-limited per IP (`TRACK_IP_LIMIT`, default 60/10min) separately
+from the report endpoint's budget.
+
+Counts are visible at `GET /api/stats?key=...`, which is a 404 (hidden
+entirely) unless the `STATS_KEY` env var is set. Set it in Render, then
+visit `https://www.floodwatchiq.com/api/stats?key=<that value>` to see
+`all_time` / `last_24h` / `last_7d` counts per event.
+
 ## Run it
 
 ```

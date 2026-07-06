@@ -11,6 +11,7 @@ Needs ANTHROPIC_API_KEY (env, ./.env, or the VoteIQ repo's .env as fallback).
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import threading
 import time
@@ -31,6 +32,14 @@ MODEL = os.environ.get("FLOOD_MODEL", "claude-haiku-4-5")
 IP_LIMIT = int(os.environ.get("REPORT_IP_LIMIT", "6"))
 IP_WINDOW_SECONDS = int(os.environ.get("REPORT_IP_WINDOW_SECONDS", "600"))
 DAILY_LIMIT = int(os.environ.get("REPORT_DAILY_LIMIT", "200"))
+
+# Analytics: no cookies, no IP addresses stored, no third-party script — just
+# aggregate counts of a handful of named events, in a local SQLite file.
+ANALYTICS_DB = BASE / "analytics.db"
+ALLOWED_EVENTS = {"pageview", "lookup", "ai_report"}
+TRACK_IP_LIMIT = int(os.environ.get("TRACK_IP_LIMIT", "60"))
+TRACK_IP_WINDOW_SECONDS = int(os.environ.get("TRACK_IP_WINDOW_SECONDS", "600"))
+STATS_KEY = os.environ.get("STATS_KEY")
 
 SYSTEM_PROMPT = """\
 You write plain-English flood risk reports for properties in Hampton Roads, Virginia.
@@ -97,7 +106,7 @@ _report_cache: dict[str, str] = {}
 _CACHE_MAX = 500
 
 _ip_lock = threading.Lock()
-_ip_hits: dict[str, deque] = defaultdict(deque)
+_ip_hits: dict[tuple[str, str], deque] = defaultdict(deque)
 
 _daily_lock = threading.Lock()
 _daily_count = 0
@@ -113,20 +122,59 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _check_ip_rate_limit(ip: str) -> None:
+def _check_ip_rate_limit(
+    ip: str, bucket: str, limit: int, window_seconds: int, message: str
+) -> None:
+    """Shared sliding-window limiter, keyed by (ip, bucket) so /api/report's
+    Claude-cost budget and /api/track's much cheaper budget never share
+    state or configuration."""
     now = time.time()
     with _ip_lock:
-        hits = _ip_hits[ip]
-        while hits and now - hits[0] > IP_WINDOW_SECONDS:
+        hits = _ip_hits[(ip, bucket)]
+        while hits and now - hits[0] > window_seconds:
             hits.popleft()
-        if len(hits) >= IP_LIMIT:
-            retry_after = max(1, int(IP_WINDOW_SECONDS - (now - hits[0])) + 1)
+        if len(hits) >= limit:
+            retry_after = max(1, int(window_seconds - (now - hits[0])) + 1)
             raise HTTPException(
-                429,
-                f"Too many report requests from this address. Try again in {retry_after}s.",
+                429, f"{message} Try again in {retry_after}s.",
                 headers={"Retry-After": str(retry_after)},
             )
         hits.append(now)
+
+
+def _init_analytics_db() -> None:
+    con = sqlite3.connect(ANALYTICS_DB)
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS events ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " ts TEXT DEFAULT CURRENT_TIMESTAMP,"
+            " event TEXT NOT NULL,"
+            " path TEXT,"
+            " referrer TEXT"
+            ")"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+_init_analytics_db()
+
+
+def _record_event(event: str, path: str | None, referrer: str | None) -> None:
+    # A short-lived connection per call sidesteps sqlite3's not-thread-safe-
+    # across-threads default — FastAPI's sync routes run in a thread pool,
+    # and this write is cheap enough that connection setup cost doesn't matter.
+    con = sqlite3.connect(ANALYTICS_DB)
+    try:
+        con.execute(
+            "INSERT INTO events (event, path, referrer) VALUES (?, ?, ?)",
+            (event, (path or "")[:300], (referrer or "")[:300]),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _check_daily_cap() -> None:
@@ -143,6 +191,49 @@ def _check_daily_cap() -> None:
 
 class ReportRequest(BaseModel):
     lookup: dict
+
+
+class TrackRequest(BaseModel):
+    event: str
+    path: str | None = None
+    referrer: str | None = None
+
+
+@app.post("/api/track", status_code=204)
+def track_event(req: TrackRequest, request: Request) -> None:
+    if req.event not in ALLOWED_EVENTS:
+        raise HTTPException(400, f"unknown event {req.event!r}")
+    _check_ip_rate_limit(
+        _client_ip(request), "track", TRACK_IP_LIMIT, TRACK_IP_WINDOW_SECONDS,
+        "Too many events from this address.",
+    )
+    _record_event(req.event, req.path, req.referrer)
+
+
+@app.get("/api/stats")
+def stats(key: str | None = None) -> dict:
+    """Aggregate event counts only — no per-visitor data exists to leak.
+    Hidden entirely (404) unless STATS_KEY is set in the environment."""
+    if not STATS_KEY:
+        raise HTTPException(404)
+    if key != STATS_KEY:
+        raise HTTPException(403, "bad key")
+
+    con = sqlite3.connect(ANALYTICS_DB)
+    try:
+        def counts(where: str = "1=1") -> dict:
+            rows = con.execute(
+                f"SELECT event, COUNT(*) FROM events WHERE {where} GROUP BY event"
+            ).fetchall()
+            return {event: n for event, n in rows}
+
+        return {
+            "all_time": counts(),
+            "last_24h": counts("ts >= datetime('now', '-1 day')"),
+            "last_7d": counts("ts >= datetime('now', '-7 day')"),
+        }
+    finally:
+        con.close()
 
 
 @app.get("/api/health")
@@ -169,7 +260,10 @@ def health() -> dict:
 
 @app.post("/api/report")
 def generate_report(req: ReportRequest, request: Request) -> dict:
-    _check_ip_rate_limit(_client_ip(request))
+    _check_ip_rate_limit(
+        _client_ip(request), "report", IP_LIMIT, IP_WINDOW_SECONDS,
+        "Too many report requests from this address.",
+    )
 
     _ensure_api_key()
     if not os.environ.get("ANTHROPIC_API_KEY"):
