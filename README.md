@@ -39,6 +39,11 @@ numbers. Reports are cached in memory by payload hash. Model defaults to
 `claude-haiku-4-5` (fractions of a cent per report); override with the
 `FLOOD_MODEL` env var.
 
+Once a report is generated, **Print / Save PDF** uses the browser's native
+print dialog (no PDF library, no server rendering) with a `@media print`
+stylesheet that shows only the report — branded with the logo and a
+generation date — and hides the map and every control.
+
 ## Analytics
 
 Three events — `pageview`, `lookup`, `ai_report` — are logged to a local
